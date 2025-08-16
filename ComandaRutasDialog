@@ -1,0 +1,394 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <base target="_top">
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; margin: 0; background-color: #f0f2f5; color: #333; }
+    .container { padding: 20px; }
+    h1, h2 { color: #1c1e21; }
+    .card { background-color: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); margin-bottom: 20px; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { padding: 8px; text-align: left; border-bottom: 1px solid #eee; }
+    th { font-weight: bold; font-size: 12px; color: #606770; }
+    td { font-size: 14px; }
+    input, select, textarea { width: 100%; padding: 6px; box-sizing: border-box; border: 1px solid #ccc; border-radius: 4px; }
+    .action-button {
+      padding: 12px 18px; font-size: 14px; font-weight: bold; border-radius: 5px;
+      border: none; cursor: pointer; transition: background-color 0.2s; color: white; margin-right: 10px;
+    }
+    .action-button:disabled { background-color: #dcdfe3 !important; color: #bec3c9 !important; cursor: not-allowed;}
+    #load-btn { background-color: #0d6efd; }
+    #save-btn { background-color: #198754; }
+    #process-btn { background-color: #ffc107; color: black; }
+    #generate-btn { background-color: #6f42c1; }
+    #status-log { font-size: 12px; font-style: italic; color: #606770; margin-top: 15px; min-height: 18px;}
+    .textarea-container { width: 100%; }
+    #routexl-input { height: 150px; font-family: monospace; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>🚚 Comanda Rutas</h1>
+
+    <div class="card">
+      <h2>Paso 1: Formatear Direcciones y Asignar Furgón</h2>
+      <div>
+        <button id="save-btn" class="action-button" disabled>Guardar Cambios</button>
+      </div>
+      <div id="status-log">Cargando pedidos...</div>
+      <div style="max-height: 400px; overflow-y: auto; margin-top: 15px;">
+        <table id="orders-table">
+          <thead>
+            <tr>
+              <th>Nº Pedido</th>
+              <th>Cliente</th>
+              <th>Teléfono</th>
+              <th>Dirección</th>
+              <th>Depto.</th>
+              <th>Comuna</th>
+              <th>Estado</th>
+              <th>Furgón</th>
+            </tr>
+          </thead>
+          <tbody>
+            <!-- Las filas de pedidos se insertarán aquí dinámicamente -->
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Asignación del Día</h2>
+      <p>Asigna rápidamente las comunas de hoy a un furgón. Esto actualizará la tabla de pedidos de arriba.</p>
+      <div id="daily-assignment-panel">
+        <!-- El panel se generará aquí dinámicamente -->
+      </div>
+      <div style="margin-top: 15px;">
+        <button id="apply-assignments-btn" class="action-button" style="background-color: #fd7e14;">Aplicar Asignaciones</button>
+      </div>
+    </div>
+
+    <div class="card">
+        <h2>Paso 1.75: Previsualización y Ajustes Finales</h2>
+        <p>Genera una vista previa de los pedidos agrupados por furgón. Aquí puedes realizar ajustes de última hora antes de generar la lista para RouteXL.</p>
+        <div>
+            <button id="generate-preview-btn" class="action-button" style="background-color: #6610f2;">Generar/Actualizar Previsualización</button>
+        </div>
+        <div id="preview-panel" style="margin-top: 15px;">
+            <!-- La vista previa se generará aquí dinámicamente -->
+        </div>
+    </div>
+
+    <div class="card">
+      <h2>Paso 1.5: Generar Lista para RouteXL</h2>
+      <p>Genera la lista de direcciones para pegar en RouteXL. Solo se incluirán los pedidos que tengan un furgón asignado.</p>
+      <div>
+        <button id="generate-list-btn" class="action-button" style="background-color: #0d6efd;">Generar Lista</button>
+        <button id="copy-list-btn" class="action-button" style="background-color: #6c757d;" disabled>Copiar Lista</button>
+      </div>
+      <div class="textarea-container" style="margin-top: 15px;">
+        <textarea id="routexl-output-list" readonly placeholder="Aquí aparecerá la lista de direcciones..." style="height: 150px; font-family: monospace;"></textarea>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Paso 2: Procesar Orden de RouteXL</h2>
+      <p>Pega aquí el texto copiado desde RouteXL para ordenar los pedidos.</p>
+      <div class="textarea-container">
+        <textarea id="routexl-input" placeholder="Pega aquí el contenido de RouteXL..."></textarea>
+      </div>
+      <div style="margin-top: 10px;">
+        <button id="process-btn" class="action-button">Procesar Ruta</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Paso 3: Generar Hojas de Ruta</h2>
+      <p>Una vez procesada la ruta, genera las hojas para envasado y carga.</p>
+      <div>
+        <button id="generate-btn" class="action-button" disabled>Generar Hojas para Imprimir</button>
+      </div>
+    </div>
+
+  </div>
+
+  <script>
+    // DOM Elements
+    const statusLog = document.getElementById('status-log');
+    const saveBtn = document.getElementById('save-btn');
+    const processBtn = document.getElementById('process-btn');
+    const generateBtn = document.getElementById('generate-btn');
+    const ordersTableBody = document.querySelector("#orders-table tbody");
+    const routeXlInput = document.getElementById('routexl-input');
+    const dailyAssignmentPanel = document.getElementById('daily-assignment-panel');
+    const applyAssignmentsBtn = document.getElementById('apply-assignments-btn');
+    const generatePreviewBtn = document.getElementById('generate-preview-btn');
+    const previewPanel = document.getElementById('preview-panel');
+    const generateListBtn = document.getElementById('generate-list-btn');
+    const copyListBtn = document.getElementById('copy-list-btn');
+    const routeXlOutputList = document.getElementById('routexl-output-list');
+
+    // State
+    const VANS = [
+        'Furgon 1 Mañana', 'Furgon 1 Tarde',
+        'Furgon 2 Mañana', 'Furgon 2 Tarde',
+        'Furgon 3 Mañana', 'Furgon 3 Tarde',
+        'Furgon 4 Mañana', 'Furgon 4 Tarde'
+    ];
+
+    // Initializer
+    document.addEventListener('DOMContentLoaded', () => {
+      loadInitialData();
+      addEventListeners();
+    });
+
+    function addEventListeners() {
+      saveBtn.addEventListener('click', handleSaveChanges);
+      processBtn.addEventListener('click', handleProcessRoute);
+      generateBtn.addEventListener('click', handleGenerateSheets);
+      applyAssignmentsBtn.addEventListener('click', handleApplyAssignments);
+      generateListBtn.addEventListener('click', handleGenerateRouteXLList);
+      copyListBtn.addEventListener('click', handleCopyList);
+      generatePreviewBtn.addEventListener('click', handleGeneratePreview);
+
+      // Add a single listener to the preview panel for delegation
+      previewPanel.addEventListener('change', (e) => {
+        if (e.target.classList.contains('preview-van-select')) {
+          handlePreviewVanChange(e.target);
+        }
+      });
+    }
+    
+    // --- Generic Handlers ---
+    function setLoadingState(isLoading, message = '') {
+      statusLog.textContent = message;
+      const allButtons = document.querySelectorAll('.action-button');
+      allButtons.forEach(btn => {
+        if(btn.id !== 'copy-list-btn') { // Don't disable copy button during loading
+            btn.disabled = isLoading;
+        }
+      });
+    }
+
+    function handleSuccess(message) {
+      setLoadingState(false);
+      saveBtn.disabled = false;
+      alert(message);
+    }
+
+    function handleError(error) {
+      setLoadingState(false, `Error: ${error.message}`);
+      saveBtn.disabled = false;
+      alert(`Error: ${error.message}`);
+    }
+    
+    // --- Data Loading and UI Building ---
+    function loadInitialData() {
+      setLoadingState(true, 'Cargando datos iniciales...');
+      google.script.run.withSuccessHandler(buildAssignmentPanel).withFailureHandler(handleError).getTodaysCommunes();
+      google.script.run.withSuccessHandler(populateOrdersTable).withFailureHandler(handleError).getOrdersForRouting();
+    }
+
+    function populateOrdersTable(orders) {
+      populateTable(orders);
+      setLoadingState(false, `Se cargaron ${orders.length} pedidos únicos.`);
+      saveBtn.disabled = false;
+    }
+
+    function buildAssignmentPanel(communes) {
+        dailyAssignmentPanel.innerHTML = '';
+        if (communes.length === 0) {
+            dailyAssignmentPanel.innerHTML = '<p>No se encontraron comunas en los pedidos de hoy.</p>';
+            return;
+        }
+
+        let panelHtml = '<div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); grid-gap: 20px;">';
+        VANS.forEach(van => {
+            panelHtml += `
+                <div>
+                    <strong>${van}</strong>
+                    <select multiple class="van-commune-select" data-van="${van}" style="width: 100%; height: 120px; margin-top: 5px;">
+                        ${communes.map(c => `<option value="${c}">${c}</option>`).join('')}
+                    </select>
+                </div>
+            `;
+        });
+        panelHtml += '</div>';
+        dailyAssignmentPanel.innerHTML = panelHtml;
+    }
+
+    function handleApplyAssignments() {
+        const communeToVanMap = {};
+        dailyAssignmentPanel.querySelectorAll('.van-commune-select').forEach(select => {
+            const van = select.dataset.van;
+            Array.from(select.selectedOptions).forEach(option => {
+                communeToVanMap[option.value] = van;
+            });
+        });
+
+        ordersTableBody.querySelectorAll('tr').forEach(row => {
+            const communeInput = row.querySelector('[data-field="commune"]');
+            const vanSelect = row.querySelector('[data-field="van"]');
+            if (communeInput && vanSelect) {
+                const commune = communeInput.value;
+                if (communeToVanMap[commune]) {
+                    vanSelect.value = communeToVanMap[commune];
+                }
+            }
+        });
+        
+        alert('Asignaciones aplicadas a la tabla. No olvides guardar los cambios.');
+    }
+
+    // --- Preview Panel Logic ---
+    function handleGeneratePreview() {
+        const ordersByVan = {};
+        // Initialize with all possible vans to ensure they all appear
+        VANS.forEach(van => ordersByVan[van] = []);
+
+        // Group orders from the main table by their currently assigned van
+        ordersTableBody.querySelectorAll('tr').forEach(row => {
+            const van = row.querySelector('[data-field="van"]').value;
+            if (van) {
+                const order = {
+                    number: row.dataset.orderNumber,
+                    address: row.querySelector('[data-field="address"]').value,
+                    commune: row.querySelector('[data-field="commune"]').value
+                };
+                if (ordersByVan[van]) {
+                    ordersByVan[van].push(order);
+                }
+            }
+        });
+
+        // Build the HTML for the preview panel
+        let previewHtml = '';
+        for (const van in ordersByVan) {
+            previewHtml += `<div class="card" style="margin-top: 10px;"><h4>${van} (${ordersByVan[van].length} pedidos)</h4>`;
+            if (ordersByVan[van].length > 0) {
+                previewHtml += '<ul style="list-style-type: none; padding-left: 0;">';
+                ordersByVan[van].forEach(order => {
+                    previewHtml += `
+                        <li style="display: flex; justify-content: space-between; align-items: center; padding: 5px; border-bottom: 1px solid #eee;">
+                            <span style="flex-grow: 1;">${order.number} - ${order.address}, ${order.commune}</span>
+                            <select class="preview-van-select" data-order-number="${order.number}" style="width: 150px; margin-left: 10px;">
+                                ${VANS.map(v => `<option value="${v}" ${v === van ? 'selected' : ''}>${v}</option>`).join('')}
+                                <option value="">-- Sin Asignar --</option>
+                            </select>
+                        </li>`;
+                });
+                previewHtml += '</ul>';
+            } else {
+                previewHtml += '<p style="font-style: italic; color: #666;">Sin pedidos asignados.</p>';
+            }
+            previewHtml += `</div>`;
+        }
+        previewPanel.innerHTML = previewHtml;
+    }
+
+    function handlePreviewVanChange(selectElement) {
+        const orderNumber = selectElement.dataset.orderNumber;
+        const newVan = selectElement.value;
+
+        // Find the corresponding row in the main orders table and update its van dropdown
+        const mainTableRow = ordersTableBody.querySelector(`tr[data-order-number="${orderNumber}"]`);
+        if (mainTableRow) {
+            const mainVanSelect = mainTableRow.querySelector('select[data-field="van"]');
+            mainVanSelect.value = newVan;
+        }
+        
+        // Optional: Regenerate preview to reflect the move, or just leave it until next manual click
+        // For simplicity, we'll let the user manually regenerate if they want a clean view.
+    }
+
+    // --- Order Table Logic ---
+    function populateTable(orders) {
+      ordersTableBody.innerHTML = '';
+      orders.forEach(order => {
+        const row = ordersTableBody.insertRow();
+        row.dataset.orderNumber = order.orderNumber;
+        row.innerHTML = `
+          <td>${order.orderNumber}</td>
+          <td>${order.customerName}</td>
+          <td><input type="text" class="data-input" data-field="phone" value="${order.phone || ''}"></td>
+          <td><input type="text" class="data-input" data-field="address" value="${order.address || ''}"></td>
+          <td><input type="text" class="data-input" data-field="department" value="${order.department || ''}"></td>
+          <td><input type="text" class="data-input" data-field="commune" value="${order.commune || ''}"></td>
+          <td>${order.status || ''}</td>
+          <td>
+            <select class="data-input" data-field="van">
+              <option value="">-- Sin Asignar --</option>
+              ${VANS.map(v => `<option value="${v}" ${order.van === v ? 'selected' : ''}>${v}</option>`).join('')}
+            </select>
+          </td>
+        `;
+      });
+    }
+
+    function handleSaveChanges() {
+      setLoadingState(true, 'Guardando cambios en la hoja "Orders"...');
+      const updatedOrders = collectTableData();
+      google.script.run.withSuccessHandler(handleSuccess).withFailureHandler(handleError).saveRouteChanges(updatedOrders);
+    }
+
+    function collectTableData() {
+        const data = [];
+        ordersTableBody.querySelectorAll('tr').forEach(row => {
+            const orderData = { orderNumber: row.dataset.orderNumber };
+            row.querySelectorAll('.data-input').forEach(input => {
+                orderData[input.dataset.field] = input.value;
+            });
+            data.push(orderData);
+        });
+        return data;
+    }
+    
+    // --- RouteXL List Generation ---
+    function handleGenerateRouteXLList() {
+        const addresses = [];
+        ordersTableBody.querySelectorAll('tr').forEach(row => {
+            const van = row.querySelector('[data-field="van"]').value;
+            if (van) { // Only include if a van is assigned
+                const address = row.querySelector('[data-field="address"]').value.trim();
+                const commune = row.querySelector('[data-field="commune"]').value.trim();
+                if (address && commune) {
+                    addresses.push(`${address} ${commune}`);
+                }
+            }
+        });
+        routeXlOutputList.value = addresses.join('\n');
+        copyListBtn.disabled = false;
+        alert(`Se generó una lista con ${addresses.length} direcciones.`);
+    }
+
+    function handleCopyList() {
+        if (!routeXlOutputList.value) return;
+        navigator.clipboard.writeText(routeXlOutputList.value)
+            .then(() => alert('¡Lista copiada al portapapeles!'))
+            .catch(err => {
+                alert('Error al copiar la lista. Por favor, cópiala manualmente.');
+                console.error('Error al copiar:', err);
+            });
+    }
+
+    // --- RouteXL and Sheet Generation ---
+    function handleProcessRoute() {
+      const text = routeXlInput.value;
+      if (!text.trim()) {
+        alert("El campo de RouteXL está vacío.");
+        return;
+      }
+      setLoadingState(true, 'Procesando datos de RouteXL...');
+      google.script.run.withSuccessHandler(response => {
+        handleSuccess(response.message);
+        generateBtn.disabled = false;
+      }).withFailureHandler(handleError).processRouteXLData(text);
+    }
+
+    function handleGenerateSheets() {
+      setLoadingState(true, 'Generando hojas de envasado y carga...');
+      google.script.run.withSuccessHandler(handleSuccess).withFailureHandler(handleError).generatePrintableRouteSheets();
+    }
+  </script>
+</body>
+</html>
