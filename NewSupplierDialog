@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <base target="_top">
+  <style>
+    body { font-family: Arial, sans-serif; margin: 20px; }
+    .supplier-group {
+      display: flex;
+      align-items: center;
+      margin-bottom: 10px;
+    }
+    .supplier-name {
+      font-weight: bold;
+      width: 40%;
+      padding-right: 10px;
+    }
+    .phone-input {
+      width: 55%;
+    }
+    input[type="text"] {
+      width: 100%;
+      padding: 8px;
+      border-radius: 4px;
+      border: 1px solid #ccc;
+    }
+    .footer-buttons {
+      margin-top: 20px;
+      text-align: right;
+    }
+    #save-button {
+      padding: 10px 20px;
+      font-weight: bold;
+      background-color: #4CAF50;
+      color: white;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+    }
+    #save-button:disabled {
+      background-color: #ccc;
+      cursor: not-allowed;
+    }
+  </style>
+</head>
+<body>
+  <div>
+    <h3>Proveedores Nuevos Detectados</h3>
+    <p>Se encontraron los siguientes proveedores en la hoja "SKU" sin un número de teléfono. Por favor, añádelos.</p>
+
+    <form id="new-supplier-form">
+      <div id="supplier-list">
+        <!-- Los proveedores nuevos se insertarán aquí -->
+      </div>
+      <div class="footer-buttons">
+        <button type="submit" id="save-button">Guardar Proveedores</button>
+      </div>
+    </form>
+  </div>
+
+  <script>
+    const supplierListEl = document.getElementById('supplier-list');
+    const saveButton = document.getElementById('save-button');
+    const newSuppliers = JSON.parse(<?= newSuppliers ?>);
+
+    // Renderiza la lista de proveedores nuevos
+    function renderSuppliers() {
+      let html = '';
+      newSuppliers.forEach(name => {
+        html += `
+          <div class="supplier-group">
+            <div class="supplier-name">${name}</div>
+            <div class="phone-input">
+              <input type="text" name="phone" data-supplier-name="${name}" placeholder="Ej. 56912345678">
+            </div>
+          </div>
+        `;
+      });
+      supplierListEl.innerHTML = html;
+    }
+
+    // Maneja el envío del formulario
+    function handleFormSubmit(e) {
+      e.preventDefault();
+      saveButton.disabled = true;
+      saveButton.textContent = 'Guardando...';
+
+      const supplierData = {};
+      const inputs = document.querySelectorAll('input[name="phone"]');
+
+      inputs.forEach(input => {
+        if (input.value) { // Solo guarda si se introdujo un teléfono
+          supplierData[input.dataset.supplierName] = input.value;
+        }
+      });
+
+      google.script.run
+        .withSuccessHandler(resultMessage => {
+          alert(resultMessage);
+          google.script.host.close();
+        })
+        .withFailureHandler(error => {
+          alert('Error: ' + error.message);
+          saveButton.disabled = false;
+          saveButton.textContent = 'Guardar Proveedores';
+        })
+        .saveNewSuppliers(supplierData);
+    }
+
+    // --- INICIALIZACIÓN ---
+    function initView() {
+      renderSuppliers();
+    }
+    initView();
+    document.getElementById('new-supplier-form').addEventListener('submit', handleFormSubmit);
+  </script>
+</body>
+</html>
