@@ -18,6 +18,7 @@ function onOpen() {
 
   ui.createMenu('Módulo de Finanzas')
     .addItem('💰 Importar Movimientos', 'showImportMovementsDialog')
+    .addItem('🛒 Importar Precios de Compra', 'importPurchasePrices')
     .addItem('📊 Conciliar Ingresos (Ventas)', 'showConciliationDialog')
     .addItem('🛒 Conciliar Egresos (Compras)', 'showExpenseConciliationDialog')
     .addSeparator()
@@ -420,6 +421,101 @@ function generatePrintableRouteSheets() {
 
 
 // --- MÓDULO DE FINANZAS ---
+
+/**
+ * Importa los precios de compra desde una hoja de cálculo de origen y los actualiza en la "Lista de Adquisiciones".
+ * Busca una columna "Producto Base" y "Precio de compra" en la hoja de origen.
+ * Actualiza la columna "Precio Adq. HOY" en la hoja de destino.
+ */
+function importPurchasePrices() {
+  const SOURCE_SPREADSHEET_ID = "1vCZejbBPMh73nbAhdZNYFOlvJvRoMA7PVSCUiLl8MMQ";
+  const SOURCE_SHEET_NAME = "RESUMEN_Adquisiciones";
+  const ui = SpreadsheetApp.getUi();
+
+  try {
+    const htmlOutput = HtmlService.createHtmlOutput('<p>Importando precios, por favor espere...</p>').setWidth(300).setHeight(60);
+    ui.showModalDialog(htmlOutput, 'Procesando...');
+
+    // 1. Acceder a la hoja de origen y obtener los datos
+    const sourceSs = SpreadsheetApp.openById(SOURCE_SPREADSHEET_ID);
+    const sourceSheet = sourceSs.getSheetByName(SOURCE_SHEET_NAME);
+    if (!sourceSheet) {
+      throw new Error(`No se pudo encontrar la hoja de origen '${SOURCE_SHEET_NAME}'.`);
+    }
+    const sourceData = sourceSheet.getRange("A:L").getValues();
+
+    // 2. Crear un mapa de precios de productos desde el origen
+    const sourcePrices = {};
+    const sourceHeaders = sourceData.shift(); // Obtener y quitar encabezados
+
+    const productNameColIdxSrc = sourceHeaders.indexOf("Producto Base");
+    const priceColIdxSrc = sourceHeaders.indexOf("Precio de compra");
+
+    if (productNameColIdxSrc === -1) {
+        throw new Error("No se pudo encontrar la columna 'Producto Base' en la hoja de origen 'RESUMEN_Adquisiciones'.");
+    }
+    if (priceColIdxSrc === -1) {
+        throw new Error("No se pudo encontrar la columna 'Precio de compra' en la hoja de origen 'RESUMEN_Adquisiciones'.");
+    }
+
+    sourceData.forEach(row => {
+      const productName = row[productNameColIdxSrc];
+      const price = row[priceColIdxSrc];
+      if (productName && productName.toString().trim() !== "" && price !== null && price !== "") {
+        sourcePrices[productName.toString().trim()] = price;
+      }
+    });
+
+    // 3. Acceder a la hoja de destino
+    const targetSs = SpreadsheetApp.getActiveSpreadsheet();
+    const targetSheet = targetSs.getSheetByName("Lista de Adquisiciones");
+    if (!targetSheet) {
+      throw new Error("No se pudo encontrar la hoja 'Lista de Adquisiciones' en este spreadsheet.");
+    }
+    const targetRange = targetSheet.getDataRange();
+    const targetAllData = targetRange.getValues();
+    const targetHeaders = targetAllData[0];
+
+    const targetProductColIdx = targetHeaders.indexOf("Producto Base");
+    const targetPriceColIdx = targetHeaders.indexOf("Precio Adq. HOY");
+
+    if (targetProductColIdx === -1) {
+        throw new Error("No se pudo encontrar la columna 'Producto Base' en la hoja de destino 'Lista de Adquisiciones'.");
+    }
+    if (targetPriceColIdx === -1) {
+        throw new Error("No se pudo encontrar la columna 'Precio Adq. HOY' en la hoja de destino 'Lista de Adquisiciones'.");
+    }
+
+    let updatedCount = 0;
+
+    // 4. Iterar y actualizar precios en el array de datos
+    for (let i = 1; i < targetAllData.length; i++) { // Empezar en 1 para omitir encabezado
+      const row = targetAllData[i];
+      const productName = row[targetProductColIdx];
+      if (productName && productName.toString().trim() !== "") {
+        const trimmedProductName = productName.toString().trim();
+        if (sourcePrices.hasOwnProperty(trimmedProductName)) {
+            const newPrice = sourcePrices[trimmedProductName];
+            if (targetAllData[i][targetPriceColIdx] !== newPrice) {
+                targetAllData[i][targetPriceColIdx] = newPrice;
+                updatedCount++;
+            }
+        }
+      }
+    }
+
+    // 5. Escribir los datos actualizados de vuelta a la hoja si hubo cambios
+    if (updatedCount > 0) {
+        targetRange.setValues(targetAllData);
+    }
+
+    ui.alert(`Proceso completado. Se actualizaron ${updatedCount} precios.`);
+
+  } catch (e) {
+    Logger.log(`Error en importPurchasePrices: ${e.toString()}`);
+    ui.alert(`Ocurrió un error: ${e.message}`);
+  }
+}
 
 function showImportMovementsDialog() {
   const html = HtmlService.createHtmlOutputFromFile('ImportMovementsDialog')
