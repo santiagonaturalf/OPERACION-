@@ -556,55 +556,20 @@ function getReconciliationData() {
 
   ordersData.shift();
   const REAL_ORDER_ID_COL = 0, REAL_CUSTOMER_NAME_COL = 1, REAL_STATUS_COL = 7, REAL_ORDER_DATE_COL = 8, REAL_TOTAL_AMOUNT_COL = 15, REAL_PAYMENT_METHOD_COL = 18, REAL_PHONE_COL = 3, REAL_RUT_COL = 16;
-  const ITEM_NAME_COL = 9; // Assuming product name is in column J, consistent with getDashboardMetrics
   const pendingOrdersMap = {};
-
   ordersData.forEach((row, index) => {
     const orderId = row[REAL_ORDER_ID_COL];
     if (!orderId) return;
-
-    // Eligibility check seems to be based on these columns, despite confusing names.
-    // We will trust the original logic for eligibility.
     const status = String(row[REAL_STATUS_COL]).trim();
     const method = row[REAL_PAYMENT_METHOD_COL];
     const orderDate = new Date(row[REAL_ORDER_DATE_COL]);
     const isEligible = (method === 'bacs' && (status === 'En Espera de Pago' || status === 'Procesando') && orderDate instanceof Date && !isNaN(orderDate));
-
-    if (isEligible) {
-      const productName = row[ITEM_NAME_COL];
-      if (!pendingOrdersMap[orderId]) {
-        // First time seeing this eligible order, create the base object
-        const totalAmount = parseFloat(String(row[REAL_TOTAL_AMOUNT_COL]).replace(/[^0-9,-]+/g,"").replace(",","."));
-        if (isNaN(totalAmount) || totalAmount <= 0) return; // Skip if amount is invalid
-
-        pendingOrdersMap[orderId] = {
-          orderId,
-          customerName: row[REAL_CUSTOMER_NAME_COL],
-          phone: row[REAL_PHONE_COL],
-          normalizedPhone: normalizePhoneNumber(row[REAL_PHONE_COL]),
-          totalAmount,
-          date: orderDate,
-          status,
-          rowNumber: index + 2, // Note: rowNumber might be less reliable now, but it's used for some unique IDs.
-          customerRUT: row[REAL_RUT_COL],
-          products: [] // Initialize products array
-        };
-      }
-
-      // Add product to the list if it exists
-      if (productName && pendingOrdersMap[orderId].products) {
-        pendingOrdersMap[orderId].products.push(String(productName).trim());
-      }
+    if (isEligible && !pendingOrdersMap[orderId]) {
+       const totalAmount = parseFloat(String(row[REAL_TOTAL_AMOUNT_COL]).replace(/[^0-9,-]+/g,"").replace(",","."));
+       if (isNaN(totalAmount) || totalAmount <= 0) return;
+       pendingOrdersMap[orderId] = { orderId, customerName: row[REAL_CUSTOMER_NAME_COL], phone: row[REAL_PHONE_COL], normalizedPhone: normalizePhoneNumber(row[REAL_PHONE_COL]), totalAmount, date: orderDate, status, rowNumber: index + 2, customerRUT: row[REAL_RUT_COL] };
     }
   });
-
-  // Join the products array into a single string for each order
-  for (const orderId in pendingOrdersMap) {
-    if (pendingOrdersMap[orderId].products) {
-      pendingOrdersMap[orderId].products = pendingOrdersMap[orderId].products.join(', ');
-    }
-  }
-
   let pendingOrders = Object.values(pendingOrdersMap);
 
   // --- 3. Matching Logic ---

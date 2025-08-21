@@ -39,7 +39,6 @@
     .manual-list li:hover { background-color: #f1f3f4; }
     .manual-list li.selected { background-color: #e8f0fe; color: #1967d2; font-weight: bold; }
     .manual-list li span { display: block; font-size: 0.8em; color: var(--text-light); }
-    .manual-list li .product-list { font-size: 0.85em; color: #6c757d; font-style: italic; margin-top: 4px; display: block; }
     #manual-assign-btn { background-color: var(--primary-color); color: white; margin-top: 15px; }
     #manual-assign-btn:disabled { background-color: #a9c7fb; cursor: not-allowed; }
     .list-item-actions { display: flex; align-items: center; gap: 10px; }
@@ -266,7 +265,6 @@
       <li data-order-id="${o.orderId}" data-order-row="${o.rowNumber}" id="order-${o.rowNumber}" data-phone="${o.normalizedPhone || ''}" data-customer-name="${o.customerName}">
         <div>
           #${o.orderId} - ${o.customerName}<span>$${o.totalAmount.toLocaleString('es-CL')}</span>
-          <span class="product-list">${o.products || 'Sin productos'}</span>
         </div>
       </li>
     `).join('') : '<li>No hay pedidos "En Espera de Pago".</li>';
