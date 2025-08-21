@@ -63,8 +63,8 @@
                 <button id="import-btn" class="action-button">Importar Pedidos (.xlsx)</button>
                 <p><strong>Paso 2:</strong> Revisa y limpia los datos.</p>
                 <button id="clean-btn" class="action-button">Limpiar Datos (Duplicados y Proveedores)</button>
-                <p><strong>Paso 3:</strong> Carga las métricas en el dashboard.</p>
-                <button id="refresh-btn" class="action-button">Cargar Métricas del Dashboard</button>
+                <p><strong>Paso 3:</strong> Concilia los ingresos de ventas.</p>
+                <button id="conciliation-btn" class="action-button" style="background-color: #ffc107; color: black;">Conciliar Ingresos de Ventas</button>
             </div>
             <div>
                 <p><strong>Acciones de Operación:</strong></p>
@@ -109,6 +109,10 @@
         gapi.load('picker', { 'callback': () => { pickerApiLoaded = true; } });
       }).getOAuthToken();
       google.charts.load('current', {packages:['corechart']});
+
+      // Cargar métricas automáticamente al abrir el dashboard
+      setLoadingState(true, 'Cargando métricas...');
+      google.script.run.withSuccessHandler(populateUI).withFailureHandler(handleError).getDashboardMetrics();
     };
 
     document.getElementById('import-btn').addEventListener('click', showPicker);
@@ -116,10 +120,7 @@
         setLoadingState(true, 'Iniciando limpieza de datos...');
         google.script.run.withSuccessHandler(handleSuccess).withFailureHandler(handleError).startDashboardRefresh();
     });
-    document.getElementById('refresh-btn').addEventListener('click', () => {
-        setLoadingState(true, 'Cargando métricas...');
-        google.script.run.withSuccessHandler(populateUI).withFailureHandler(handleError).getDashboardMetrics();
-    });
+    document.getElementById('conciliation-btn').addEventListener('click', () => google.script.run.showConciliationDialog());
     document.getElementById('packaging-btn').addEventListener('click', () => google.script.run.startPackagingProcess());
     document.getElementById('acq-btn').addEventListener('click', () => {
         setLoadingState(true, 'Generando borrador y abriendo editor...');

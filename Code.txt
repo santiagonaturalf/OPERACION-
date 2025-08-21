@@ -72,6 +72,17 @@ function setupProjectSheets() {
   sheetsToEnsure.forEach(sheetInfo => {
     ensureSheetExists(sheetInfo.name, sheetInfo.headers, sheetInfo.index);
   });
+
+  // Ensure "resumen caja diario" sheet exists
+  const resumenSheetName = "resumen caja diario";
+  let resumenSheet = ss.getSheetByName(resumenSheetName);
+  if (!resumenSheet) {
+    resumenSheet = ss.insertSheet(resumenSheetName);
+    createdSheets.push(resumenSheetName);
+  }
+  // Set the formula in the "resumen caja diario" sheet
+  const formula = '=IMPORTRANGE("1vCZejbBPMh73nbAhdZNYFOlvJvRoMA7PVSCUiLl8MMQ";"resumen caja diario!A:G")';
+  resumenSheet.getRange("A1").setFormula(formula);
   
   // Special check for 'Asignado a Pedido' column in case the sheet already existed
   const movementsSheet = ss.getSheetByName("MovimientosBancarios");
