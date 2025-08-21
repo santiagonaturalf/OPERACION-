@@ -1,0 +1,1602 @@
+/**
+ * @OnlyCurrentDoc
+ * Script para el flujo de trabajo completo de operaciones: Envasado, Adquisiciones y Dashboard.
+ * Versión Final.
+ */
+
+// --- LÓGICA DE MENÚS Y DISPARADORES ---
+
+function onOpen() {
+  setupProjectSheets();
+  const ui = SpreadsheetApp.getUi();
+
+  ui.createMenu('Gestión de Operaciones')
+    .addItem('🚀 Abrir Dashboard de Operaciones', 'showDashboard')
+    .addSeparator()
+    .addItem('🚚 Comanda Rutas', 'showComandaRutasDialog')
+    .addToUi();
+
+  ui.createMenu('Módulo de Finanzas')
+    .addItem('💰 Importar Movimientos', 'showImportMovementsDialog')
+    .addItem('🛒 Importar Precios de Compra', 'importPurchasePrices')
+    .addItem('📊 Conciliar Ingresos (Ventas)', 'showConciliationDialog')
+    .addItem('🛒 Conciliar Egresos (Compras)', 'showExpenseConciliationDialog')
+    .addSeparator()
+    .addItem('🔧 Formatear Teléfonos en Hoja Orders', 'formatPhoneNumbersInOrdersSheet')
+    .addToUi();
+}
+
+function onEdit(e) {
+  const range = e.range;
+  const sheet = range.getSheet();
+  const sheetName = sheet.getName();
+  const row = range.getRow();
+  const col = range.getColumn();
+  if (sheetName === "Lista de Adquisiciones" && row > 1 && (col === 2 || col === 3)) {
+    recalculateRowInventory(sheet, row);
+  }
+}
+
+// --- SETUP & CONFIGURACIÓN ---
+
+/**
+ * Crea todas las hojas necesarias para la aplicación si no existen y notifica al usuario.
+ */
+function setupProjectSheets() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const createdSheets = [];
+
+  // Helper function to create a sheet with headers if it doesn't exist
+  const ensureSheetExists = (sheetName, headers, index) => {
+    let sheet = ss.getSheetByName(sheetName);
+    if (!sheet) {
+      sheet = ss.insertSheet(sheetName, index);
+      sheet.getRange(1, 1, 1, headers.length).setValues([headers]).setFontWeight("bold");
+      sheet.setFrozenRows(1);
+      createdSheets.push(sheetName);
+    }
+    return sheet;
+  };
+
+  // Define all required sheets and their headers
+  const sheetsToEnsure = [
+    { name: "Orders", headers: ["Order #", "Nombre y apellido", "Email", "Phone", "Shipping Address", "Shipping City", "Shipping Region", "Shipping Postcode", "Item Name", "Item SKU", "Item Quantity", "Item Price", "Line Total", "Tax Rate", "Tax Amount", "Importe total del pedido", "Payment Method", "Transaction ID", "Estado del pago"], index: 0 },
+    { name: "SKU", headers: ["Nombre Producto", "Producto Base", "Formato Compra", "Cantidad Compra", "Unidad Compra", "Categoría", "Cantidad Venta", "Unidad Venta", "Proveedor", "Teléfono"], index: 1 },
+    { name: "Proveedores", headers: ["Nombre", "Teléfono"], index: 2 },
+    { name: "MovimientosBancarios", headers: ["MONTO", "DESCRIPCIÓN MOVIMIENTO", "FECHA", "SALDO", "N° DOCUMENTO", "SUCURSAL", "CARGO/ABONO", "Asignado a Pedido"], index: 3 },
+    { name: "AsignacionesHistoricas", headers: ["ID_Pago", "ID_Pedido", "Nombre_Banco", "Nombre_Pedido", "Monto", "Fecha_Asignacion"], index: 4 },
+    { name: "Lista de Envasado", headers: ["Cantidad", "Inventario", "Nombre Producto"], index: 5 },
+    { name: "Lista de Adquisiciones", headers: ["Producto Base", "Cantidad a Comprar", "Formato de Compra", "Inventario Actual", "Unidad Inventario Actual", "Necesidad de Venta", "Unidad Venta", "Inventario al Finalizar", "Unidad Inventario Final", "Precio Adq. Anterior", "Precio Adq. HOY", "Proveedor"], index: 6 },
+    { name: "ClientBankData", headers: ["PaymentIdentifier", "CustomerRUT", "CustomerName", "LastSeen"], index: 7 }
+  ];
+
+  sheetsToEnsure.forEach(sheetInfo => {
+    ensureSheetExists(sheetInfo.name, sheetInfo.headers, sheetInfo.index);
+  });
+
+  // Special check for 'Asignado a Pedido' column in case the sheet already existed
+  const movementsSheet = ss.getSheetByName("MovimientosBancarios");
+  const currentMovementsHeaders = movementsSheet.getRange(1, 1, 1, movementsSheet.getLastColumn()).getValues()[0];
+  if (currentMovementsHeaders.indexOf("Asignado a Pedido") === -1) {
+    movementsSheet.getRange(1, currentMovementsHeaders.length + 1).setValue("Asignado a Pedido").setFontWeight("bold");
+  }
+
+  if (createdSheets.length > 0) {
+    SpreadsheetApp.getUi().alert(`Se han creado las siguientes hojas que faltaban para el correcto funcionamiento: ${createdSheets.join(', ')}.`);
+  }
+}
+
+function approveMatch(paymentId, orderId) {
+  try {
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    const movementsSheet = ss.getSheetByName("MovimientosBancarios");
+    const ordersSheet = ss.getSheetByName("Orders");
+    const assignmentsSheet = ss.getSheetByName("AsignacionesHistoricas");
+
+    // --- Update MovimientosBancarios ---
+    const paymentRowIndex = parseInt(paymentId.split('|')[1]);
+    const assignedCol = movementsSheet.getRange(1, 1, 1, movementsSheet.getLastColumn()).getValues()[0].indexOf("Asignado a Pedido") + 1;
+    if (assignedCol === 0) throw new Error("No se encontró la columna 'Asignado a Pedido'.");
+
+    const existingVal = movementsSheet.getRange(paymentRowIndex, assignedCol).getValue();
+    if(existingVal) {
+      return { status: "error", message: `Este pago ya ha sido asignado al pedido #${existingVal}.` };
+    }
+    movementsSheet.getRange(paymentRowIndex, assignedCol).setValue(orderId);
+
+    const paymentData = movementsSheet.getRange(paymentRowIndex, 1, 1, assignedCol).getValues()[0];
+    const paymentAmount = paymentData[movementsSheet.getRange(1, 1, 1, movementsSheet.getLastColumn()).getValues()[0].indexOf("MONTO")];
+    const paymentDesc = paymentData[movementsSheet.getRange(1, 1, 1, movementsSheet.getLastColumn()).getValues()[0].indexOf("DESCRIPCIÓN MOVIMIENTO")];
+
+
+    // --- Update Orders ---
+    const ordersData = ordersSheet.getDataRange().getValues();
+    const headers = ordersData.shift();
+    const orderIdCol = 0; // Column A
+    const statusCol = 7; // Column H
+
+    let orderCustomerName = '';
+    let rowsUpdated = 0;
+    ordersData.forEach((row, index) => {
+      if (String(row[orderIdCol]) === String(orderId)) {
+        ordersSheet.getRange(index + 2, statusCol + 1).setValue("Procesando Conciliacion Aprobada");
+        if (!orderCustomerName) {
+            orderCustomerName = row[1]; // Column B
+        }
+        rowsUpdated++;
+      }
+    });
+
+    if(rowsUpdated === 0) throw new Error(`No se encontraron filas para el pedido #${orderId} para actualizar.`);
+
+    // --- Log to AsignacionesHistoricas ---
+    if(assignmentsSheet) {
+      assignmentsSheet.appendRow([paymentId, orderId, paymentDesc, orderCustomerName, paymentAmount, new Date()]);
+    }
+
+    // --- (NEW) Update ClientBankData ---
+    const clientBankSheet = ss.getSheetByName("ClientBankData");
+    if (clientBankSheet) {
+      const paymentIdentifier = extractNameFromDescription(paymentDesc);
+      const customerRUT = ordersData.find(r => String(r[orderIdCol]) === String(orderId))[16];
+
+      if (paymentIdentifier && customerRUT) {
+        const bankData = clientBankSheet.getDataRange().getValues();
+        const identifierCol = 0;
+        let existingRow = -1;
+
+        for (let i = 1; i < bankData.length; i++) {
+          if (bankData[i][identifierCol] === paymentIdentifier) {
+            existingRow = i + 1;
+            break;
+          }
+        }
+
+        if (existingRow !== -1) {
+          clientBankSheet.getRange(existingRow, 4).setValue(new Date());
+        } else {
+          clientBankSheet.appendRow([paymentIdentifier, customerRUT, orderCustomerName, new Date()]);
+        }
+      }
+    }
+
+    SpreadsheetApp.flush();
+    return { status: "success", message: `Pedido #${orderId} asignado correctamente.` };
+  } catch (e) {
+    Logger.log(e);
+    return { status: "error", message: e.toString() };
+  }
+}
+
+function approveOrderForManagement(orderId) {
+  try {
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    const ordersSheet = ss.getSheetByName("Orders");
+
+    const ordersData = ordersSheet.getDataRange().getValues();
+    ordersData.shift(); // remove headers
+    const orderIdCol = 0; // Column A
+    const statusCol = 7; // Column H
+
+    let updatedRows = 0;
+    ordersData.forEach((row, index) => {
+      if (String(row[orderIdCol]) === String(orderId)) {
+        ordersSheet.getRange(index + 2, statusCol + 1).setValue("APROBADO POR GERENCIA");
+        updatedRows++;
+      }
+    });
+
+    if (updatedRows > 0) {
+      SpreadsheetApp.flush();
+      return { status: "success", message: `Pedido #${orderId} aprobado por gerencia.` };
+    } else {
+      return { status: "error", message: `No se encontró el pedido #${orderId}.` };
+    }
+  } catch (e) {
+    Logger.log(e);
+    return { status: "error", message: e.toString() };
+  }
+}
+
+
+// --- LÓGICA DE COMANDA RUTAS ---
+
+function showComandaRutasDialog() {
+  const html = HtmlService.createHtmlOutputFromFile('ComandaRutasDialog')
+    .setWidth(1000)
+    .setHeight(700);
+  SpreadsheetApp.getUi().showModalDialog(html, 'Comanda Rutas');
+}
+
+function getOrdersForRouting() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const ordersSheet = ss.getSheetByName('Orders');
+  if (!ordersSheet) {
+    throw new Error('No se encontró la hoja "Orders".');
+  }
+
+  const dataRange = ordersSheet.getDataRange();
+  const values = dataRange.getValues();
+
+  if (values.length < 2) return []; // No data rows
+
+  const headers = values.shift().map(h => String(h || '').trim());
+
+  const requiredHeaders = {
+    "orderNumber": "Número de pedido",
+    "customerName": "Nombre completo",
+    "phone": "Teléfono",
+    "address": "Direccion",
+    "department": "Depto/Condominio",
+    "commune": "Comuna",
+    "status": "Estado"
+  };
+
+  const headerMap = {};
+  const missingHeaders = [];
+
+  for (const key in requiredHeaders) {
+    const headerName = requiredHeaders[key];
+    const index = headers.indexOf(headerName);
+    if (index === -1) {
+      missingHeaders.push(`'${headerName}'`);
+    }
+    headerMap[key] = index;
+  }
+
+  // Also find the optional 'Furgón' column
+  headerMap["van"] = headers.indexOf("Furgón");
+
+  if (missingHeaders.length > 0) {
+    throw new Error(`Error de Cabecera: No se encontraron las siguientes columnas requeridas en la hoja "Orders":\n\n${missingHeaders.join(', ')}\n\nPor favor, asegúrate de que los nombres de las columnas en tu hoja coincidan exactamente (mayúsculas, minúsculas y espacios).\n\nLas columnas que SÍ se encontraron son:\n[${headers.join(', ')}]`);
+  }
+
+  const uniqueOrders = {};
+  values.forEach(row => {
+    const orderId = row[headerMap.orderNumber];
+    if (orderId && !uniqueOrders[orderId]) {
+      uniqueOrders[orderId] = {
+        orderNumber: orderId,
+        customerName: row[headerMap.customerName] || '',
+        phone: row[headerMap.phone] || '',
+        address: row[headerMap.address] || '',
+        department: row[headerMap.department] || '',
+        commune: row[headerMap.commune] || '',
+        status: row[headerMap.status] || '',
+        van: (headerMap.van !== -1) ? row[headerMap.van] || '' : ''
+      };
+    }
+  });
+
+  return Object.values(uniqueOrders);
+}
+
+function saveRouteChanges(updatedOrders) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const ordersSheet = ss.getSheetByName('Orders');
+  if (!ordersSheet) {
+    throw new Error('No se encontró la hoja "Orders".');
+  }
+
+  // Check if "Furgón" column exists, if not, add it at the end.
+  const headers = ordersSheet.getRange(1, 1, 1, ordersSheet.getLastColumn()).getValues()[0];
+  const vanHeader = 'Furgón';
+  let vanColumn = headers.indexOf(vanHeader) + 1;
+
+  if (vanColumn === 0) { // Not found
+    vanColumn = ordersSheet.getLastColumn() + 1;
+    ordersSheet.getRange(1, vanColumn).setValue(vanHeader).setFontWeight('bold');
+  }
+
+  const allOrderNumbers = ordersSheet.getRange("A2:A" + ordersSheet.getLastRow()).getValues().flat();
+
+  updatedOrders.forEach(order => {
+    allOrderNumbers.forEach((orderNumber, index) => {
+      if (orderNumber === order.orderNumber) {
+        const row = index + 2; // +2 because sheet is 1-based and we skipped header
+        ordersSheet.getRange(row, 4).setValue(order.phone);       // Col D: Phone
+        ordersSheet.getRange(row, 5).setValue(order.address);     // Col E: Address
+        ordersSheet.getRange(row, 6).setValue(order.department);  // Col F: Department
+        ordersSheet.getRange(row, 7).setValue(order.commune);     // Col G: Commune
+        ordersSheet.getRange(row, vanColumn).setValue(order.van);
+      }
+    });
+  });
+
+  return { status: 'success', message: 'Cambios guardados con éxito.' };
+}
+
+function saveSingleOrderChange(orderData) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const ordersSheet = ss.getSheetByName('Orders');
+  if (!ordersSheet) {
+    throw new Error('No se encontró la hoja "Orders".');
+  }
+
+  // Find van column index, add header if it doesn't exist.
+  const headers = ordersSheet.getRange(1, 1, 1, ordersSheet.getLastColumn()).getValues()[0];
+  const vanHeader = 'Furgón';
+  let vanColumn = headers.indexOf(vanHeader) + 1;
+  if (vanColumn === 0) {
+    vanColumn = ordersSheet.getLastColumn() + 1;
+    ordersSheet.getRange(1, vanColumn).setValue(vanHeader).setFontWeight('bold');
+  }
+
+  const allOrderNumbers = ordersSheet.getRange("A2:A" + ordersSheet.getLastRow()).getValues().flat();
+  let updatedCount = 0;
+
+  allOrderNumbers.forEach((orderNumber, index) => {
+    if (String(orderNumber) === String(orderData.orderNumber)) {
+      const row = index + 2; // +2 because sheet is 1-based and we skipped header
+      // We only update the columns that are editable in the UI.
+      ordersSheet.getRange(row, 5).setValue(orderData.address);     // Col E: Address
+      ordersSheet.getRange(row, 6).setValue(orderData.department);  // Col F: Department
+      ordersSheet.getRange(row, 7).setValue(orderData.commune);     // Col G: Commune
+      ordersSheet.getRange(row, vanColumn).setValue(orderData.van);
+      updatedCount++;
+    }
+  });
+
+  if (updatedCount > 0) {
+    SpreadsheetApp.flush(); // Ensure changes are written to the sheet immediately.
+    return { status: 'success', message: `Pedido #${orderData.orderNumber} actualizado.` };
+  } else {
+    // This case might not be a true "error" if the order just isn't in the sheet for some reason.
+    // The frontend can handle this message without blocking the user.
+    return { status: 'error', message: `No se encontró el pedido #${orderData.orderNumber} para actualizar.` };
+  }
+}
+
+/**
+ * Helper function to get all data from the 'Orders' sheet, mapped by order number.
+ * Each order number will map to an array of its line items.
+ */
+function getFullOrdersMap() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const ordersSheet = ss.getSheetByName('Orders');
+  if (!ordersSheet) throw new Error('No se encontró la hoja "Orders".');
+
+  const data = ordersSheet.getDataRange().getValues();
+  const headers = data.shift().map(h => String(h || '').trim());
+
+  const headerMap = {
+    orderNumber: headers.indexOf("Número de pedido"),
+    customerName: headers.indexOf("Nombre completo"),
+    phone: headers.indexOf("Teléfono"),
+    address: headers.indexOf("Direccion"),
+    department: headers.indexOf("Depto/Condominio"),
+    commune: headers.indexOf("Comuna"),
+    itemName: headers.indexOf("Nombre Producto") // FIX: Changed from "Item Name" to correct Spanish header
+  };
+
+  // Basic validation
+  if (headerMap.orderNumber === -1 || headerMap.itemName === -1 || headerMap.customerName === -1) {
+    throw new Error("Faltan columnas esenciales como 'Número de pedido', 'Nombre completo' o 'Nombre Producto' en la hoja 'Orders'.");
+  }
+
+  const ordersMap = {};
+  data.forEach(row => {
+    const orderId = row[headerMap.orderNumber];
+    if (orderId) {
+      if (!ordersMap[orderId]) {
+        ordersMap[orderId] = [];
+      }
+      ordersMap[orderId].push(row);
+    }
+  });
+
+  return { ordersMap, headerMap };
+}
+
+
+function processRouteXLData(pastedText, vanName) {
+  if (!vanName) {
+    throw new Error("No se especificó un nombre de furgón para procesar la ruta.");
+  }
+
+  const lines = pastedText.split('\n');
+  const orderedOrderNumbers = lines.map(line => {
+    const match = line.match(/#(\d+)/);
+    return match ? match[1] : null; // Return just the number, not the #
+  }).filter(Boolean);
+
+  if (orderedOrderNumbers.length === 0) {
+    throw new Error("No se pudieron encontrar números de pedido válidos (ej: #12345) en el texto pegado.");
+  }
+
+  // Call the new generator function
+  return generateFinalSheets(orderedOrderNumbers, vanName);
+}
+
+
+function generateFinalSheets(orderedOrderNumbers, vanName) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const { ordersMap, headerMap } = getFullOrdersMap();
+
+  // Helper to get a sheet, clearing it if it exists or creating it if it doesn't.
+  const getSheet = (sheetName) => {
+    let sheet = ss.getSheetByName(sheetName);
+    if (sheet) {
+      sheet.clear();
+    } else {
+      sheet = ss.insertSheet(sheetName);
+    }
+    return sheet;
+  };
+
+  const spreadsheetId = ss.getId();
+  const basePdfUrl = `https://docs.google.com/spreadsheets/d/${spreadsheetId}/export?format=pdf&gridlines=false&printtitle=false`;
+
+  // --- 1. Create "Hoja de Envasado" ---
+  const packagingSheetName = `${vanName} - Envasado`;
+  const packagingSheet = getSheet(packagingSheetName);
+
+  const packagingHeaders = ["Numero de Pedido", "ENVASADOR", "BULTOS"];
+  packagingSheet.getRange("A1:C1").setValues([packagingHeaders]).setFontWeight("bold");
+
+  const reversedOrderNumbers = [...orderedOrderNumbers].reverse();
+  const packagingData = reversedOrderNumbers.map(orderNumber => {
+    const orderItems = ordersMap[orderNumber];
+    let hasEggs = false;
+    if (orderItems) {
+      hasEggs = orderItems.some(itemRow => {
+        const itemName = itemRow[headerMap.itemName] || '';
+        return itemName.toLowerCase().includes('huevos');
+      });
+    }
+    const bultosValue = hasEggs ? 'H' : '';
+    return [orderNumber, '', bultosValue];
+  });
+
+  if (packagingData.length > 0) {
+    const numRows = packagingData.length;
+    const range = packagingSheet.getRange(1, 1, numRows + 1, 3); // Include header row
+    packagingSheet.getRange(2, 1, numRows, 3).setValues(packagingData);
+
+    // Apply formatting
+    range.setHorizontalAlignment("center").setVerticalAlignment("center").setWrap(true);
+    range.setBorder(true, true, true, true, true, true, "#000000", SpreadsheetApp.BorderStyle.SOLID_MEDIUM);
+
+    packagingSheet.setColumnWidth(2, 250); // ENVASADOR
+    packagingSheet.setColumnWidth(3, 250); // BULTOS
+    packagingSheet.setRowHeights(2, numRows, 80);
+  }
+  packagingSheet.autoResizeColumn(1);
+
+  const packagingPdfUrl = `${basePdfUrl}&gid=${packagingSheet.getSheetId()}&portrait=true`;
+
+  // --- 2. Create "Comanda Rutas" ---
+  const routeSheetName = `${vanName} - Ruta`;
+  const routeSheet = getSheet(routeSheetName);
+
+  const routeHeaders = ["Numero de Pedido", "Nombre Completo", "Bultos", "Direccion", "Depto/Condominio", "COMUNA", "TELEFONO"];
+  routeSheet.getRange("A1:G1").setValues([routeHeaders]).setFontWeight("bold");
+
+  const routeData = orderedOrderNumbers.map(orderNumber => {
+    const orderItems = ordersMap[orderNumber];
+    if (!orderItems || orderItems.length === 0) {
+      return [orderNumber, 'PEDIDO NO ENCONTRADO', '', '', '', '', ''];
+    }
+    const firstItem = orderItems[0];
+    return [
+      orderNumber,
+      firstItem[headerMap.customerName],
+      '', // Bultos is blank
+      firstItem[headerMap.address],
+      firstItem[headerMap.department],
+      firstItem[headerMap.commune],
+      firstItem[headerMap.phone]
+    ];
+  });
+
+  if (routeData.length > 0) {
+    const numRows = routeData.length;
+    const range = routeSheet.getRange(1, 1, numRows + 1, 7); // Include header row
+    routeSheet.getRange(2, 1, numRows, 7).setValues(routeData);
+
+    // Apply formatting
+    range.setHorizontalAlignment("center").setVerticalAlignment("center").setWrap(true);
+    range.setBorder(true, true, true, true, true, true, "#000000", SpreadsheetApp.BorderStyle.SOLID_MEDIUM);
+
+    routeSheet.setColumnWidth(3, 300); // Bultos
+    routeSheet.setRowHeights(2, numRows, 80);
+  }
+  routeSheet.autoResizeColumns(1, 2);
+  routeSheet.autoResizeColumns(4, 7); // Resize all from D to G
+
+  const routePdfUrl = `${basePdfUrl}&gid=${routeSheet.getSheetId()}&portrait=false`;
+
+  const message = `Se han generado las hojas y los enlaces de impresión para "${vanName}".`;
+
+  return {
+    status: 'success',
+    message: message,
+    packagingPdfUrl: packagingPdfUrl,
+    routePdfUrl: routePdfUrl
+  };
+}
+
+function cleanupRouteSheets() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const allSheets = ss.getSheets();
+  let deletedCount = 0;
+
+  allSheets.forEach(sheet => {
+    const sheetName = sheet.getName();
+    if (sheetName.endsWith(' - Envasado') || sheetName.endsWith(' - Ruta')) {
+      ss.deleteSheet(sheet);
+      deletedCount++;
+    }
+  });
+
+  return {
+    status: 'success',
+    message: `Limpieza completada. Se eliminaron ${deletedCount} hojas de ruta.`
+  };
+}
+
+
+// --- MÓDULO DE FINANZAS ---
+
+/**
+ * Importa los precios de compra desde una hoja de cálculo de origen y los actualiza en la "Lista de Adquisiciones".
+ * Busca una columna "Producto Base" y "Precio de compra" en la hoja de origen.
+ * Actualiza la columna "Precio Adq. HOY" en la hoja de destino.
+ */
+function importPurchasePrices() {
+  const SOURCE_SPREADSHEET_ID = "1vCZejbBPMh73nbAhdZNYFOlvJvRoMA7PVSCUiLl8MMQ";
+  const SOURCE_SHEET_NAME = "RESUMEN_Adquisiciones";
+  const ui = SpreadsheetApp.getUi();
+
+  try {
+    const htmlOutput = HtmlService.createHtmlOutput('<p>Importando precios, por favor espere...</p>').setWidth(300).setHeight(60);
+    ui.showModalDialog(htmlOutput, 'Procesando...');
+
+    // 1. Acceder a la hoja de origen y obtener los datos
+    const sourceSs = SpreadsheetApp.openById(SOURCE_SPREADSHEET_ID);
+    const sourceSheet = sourceSs.getSheetByName(SOURCE_SHEET_NAME);
+    if (!sourceSheet) {
+      throw new Error(`No se pudo encontrar la hoja de origen '${SOURCE_SHEET_NAME}'.`);
+    }
+    const sourceData = sourceSheet.getRange("A:L").getValues();
+
+    // 2. Crear un mapa de precios de productos desde el origen
+    const sourcePrices = {};
+    const sourceHeaders = sourceData.shift(); // Obtener y quitar encabezados
+
+    const productNameColIdxSrc = sourceHeaders.indexOf("Producto Base");
+    const priceColIdxSrc = sourceHeaders.indexOf("Precio de compra");
+
+    if (productNameColIdxSrc === -1) {
+        throw new Error("No se pudo encontrar la columna 'Producto Base' en la hoja de origen 'RESUMEN_Adquisiciones'.");
+    }
+    if (priceColIdxSrc === -1) {
+        throw new Error("No se pudo encontrar la columna 'Precio de compra' en la hoja de origen 'RESUMEN_Adquisiciones'.");
+    }
+
+    sourceData.forEach(row => {
+      const productName = row[productNameColIdxSrc];
+      const price = row[priceColIdxSrc];
+      if (productName && productName.toString().trim() !== "" && price !== null && price !== "") {
+        sourcePrices[productName.toString().trim()] = price;
+      }
+    });
+
+    // 3. Acceder a la hoja de destino
+    const targetSs = SpreadsheetApp.getActiveSpreadsheet();
+    const targetSheet = targetSs.getSheetByName("Lista de Adquisiciones");
+    if (!targetSheet) {
+      throw new Error("No se pudo encontrar la hoja 'Lista de Adquisiciones' en este spreadsheet.");
+    }
+    const targetRange = targetSheet.getDataRange();
+    const targetAllData = targetRange.getValues();
+    const targetHeaders = targetAllData[0];
+
+    const targetProductColIdx = targetHeaders.indexOf("Producto Base");
+    const targetPriceColIdx = targetHeaders.indexOf("Precio Adq. HOY");
+
+    if (targetProductColIdx === -1) {
+        throw new Error("No se pudo encontrar la columna 'Producto Base' en la hoja de destino 'Lista de Adquisiciones'.");
+    }
+    if (targetPriceColIdx === -1) {
+        throw new Error("No se pudo encontrar la columna 'Precio Adq. HOY' en la hoja de destino 'Lista de Adquisiciones'.");
+    }
+
+    let updatedCount = 0;
+
+    // 4. Iterar y actualizar precios en el array de datos
+    for (let i = 1; i < targetAllData.length; i++) { // Empezar en 1 para omitir encabezado
+      const row = targetAllData[i];
+      const productName = row[targetProductColIdx];
+      if (productName && productName.toString().trim() !== "") {
+        const trimmedProductName = productName.toString().trim();
+        if (sourcePrices.hasOwnProperty(trimmedProductName)) {
+            const newPrice = sourcePrices[trimmedProductName];
+            if (targetAllData[i][targetPriceColIdx] !== newPrice) {
+                targetAllData[i][targetPriceColIdx] = newPrice;
+                updatedCount++;
+            }
+        }
+      }
+    }
+
+    // 5. Escribir los datos actualizados de vuelta a la hoja si hubo cambios
+    if (updatedCount > 0) {
+        targetRange.setValues(targetAllData);
+    }
+
+    ui.alert(`Proceso completado. Se actualizaron ${updatedCount} precios.`);
+
+  } catch (e) {
+    Logger.log(`Error en importPurchasePrices: ${e.toString()}`);
+    ui.alert(`Ocurrió un error: ${e.message}`);
+  }
+}
+
+function showImportMovementsDialog() {
+  const html = HtmlService.createHtmlOutputFromFile('ImportMovementsDialog')
+    .setWidth(600)
+    .setHeight(400);
+  SpreadsheetApp.getUi().showModalDialog(html, 'Importar Movimientos Bancarios');
+}
+
+function importBankMovements(data) {
+  if (!data || typeof data !== 'string') {
+    throw new Error("No se proporcionaron datos válidos para importar.");
+  }
+
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheet = ss.getSheetByName("MovimientosBancarios");
+  if (!sheet) {
+    throw new Error("No se encontró la hoja 'MovimientosBancarios'. Por favor, vuelve a abrir el documento para que se cree automáticamente.");
+  }
+
+  const newRows = data.trim().split('\n').map(line => line.split('\t'));
+  if (newRows.length === 0) {
+    return "No se encontraron filas para importar.";
+  }
+
+  // 1. Read existing data using a more robust method
+  const allData = sheet.getDataRange().getValues();
+  const headers = allData.shift(); // Remove header row
+  const existingData = allData;   // The rest is existing data
+
+  Logger.log(`Total historical rows read: ${existingData.length}`);
+
+  // DEBUG: Key with Amount and Description
+  const existingKeys = new Set(existingData.map(row =>
+    `${String(row[0]).trim()}|${String(row[1]).trim()}`
+  ));
+
+  if (existingKeys.size > 0) {
+    Logger.log(`Sample historical key (Amount + Desc): ${existingKeys.values().next().value}`);
+  }
+
+  // 3. Filter out duplicates from the new rows
+  const rowsToInsert = [];
+  let duplicateCount = 0;
+
+  newRows.forEach((row, index) => {
+    // DEBUG: Key with Amount and Description
+    const key = `${String(row[0]).trim()}|${String(row[1]).trim()}`;
+    if (index === 0) {
+      Logger.log(`Sample new key (Amount + Desc): ${key}`);
+      Logger.log(`Does historical set have this new key? ${existingKeys.has(key)}`);
+    }
+    if (!existingKeys.has(key)) {
+      rowsToInsert.push(row);
+      existingKeys.add(key); // Add new key to set to avoid duplicate imports in the same batch
+    } else {
+      duplicateCount++;
+    }
+  });
+
+  // 4. Insert only the new, non-duplicate rows
+  if (rowsToInsert.length > 0) {
+    sheet.getRange(sheet.getLastRow() + 1, 1, rowsToInsert.length, rowsToInsert[0].length).setValues(rowsToInsert);
+  }
+
+  // 5. Update the return message
+  let message = `Importación completada.`;
+  if (rowsToInsert.length > 0) {
+    message += ` Se añadieron ${rowsToInsert.length} nuevos movimientos.`;
+  }
+  if (duplicateCount > 0) {
+    message += ` Se omitieron ${duplicateCount} movimientos duplicados.`;
+  }
+  if (rowsToInsert.length === 0 && duplicateCount === 0) {
+    message = "No se importó nada. Revisa los datos pegados.";
+  }
+
+  return message;
+}
+
+function showFinanceDashboard() {
+  const html = HtmlService.createHtmlOutputFromFile('FinanceDashboardDialog')
+    .setWidth(500)
+    .setHeight(350);
+  SpreadsheetApp.getUi().showModalDialog(html, 'Módulo de Finanzas');
+}
+
+function showConciliationDialog() {
+  const html = HtmlService.createHtmlOutputFromFile('SalesReconciliationDialog')
+    .setWidth(1000)
+    .setHeight(700);
+  SpreadsheetApp.getUi().showModalDialog(html, 'Conciliar Ingresos de Ventas');
+}
+
+function showExpenseConciliationDialog() {
+  SpreadsheetApp.getUi().alert("Este módulo (Conciliar Egresos) será implementado en un próximo paso.");
+}
+
+function getReconciliationData() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const movementsSheet = ss.getSheetByName("MovimientosBancarios");
+  const ordersSheet = ss.getSheetByName("Orders");
+  const clientBankSheet = ss.getSheetByName("ClientBankData");
+
+  if (!movementsSheet || !ordersSheet || !clientBankSheet) {
+    throw new Error("Una o más hojas requeridas no se encontraron: MovimientosBancarios, Orders, ClientBankData.");
+  }
+
+  // --- 1. Fetch all necessary data ---
+  const movementsData = movementsSheet.getDataRange().getValues();
+  const ordersData = ordersSheet.getDataRange().getValues();
+  const clientBankData = clientBankSheet.getDataRange().getValues();
+
+  // --- 2. Prepare initial lists ---
+  const movementsHeaders = movementsData.shift();
+  const assignedColIdx = movementsHeaders.indexOf("Asignado a Pedido");
+  const chargeColIdx = movementsHeaders.indexOf("CARGO/ABONO");
+  const amountColIdx = movementsHeaders.indexOf("MONTO");
+  const descColIdx = movementsHeaders.indexOf("DESCRIPCIÓN MOVIMIENTO");
+  const dateColIdx = movementsHeaders.indexOf("FECHA");
+
+  let unassignedPayments = [];
+  movementsData.forEach((row, index) => {
+    if (row[chargeColIdx] === 'A' && !row[assignedColIdx]) {
+      const amount = parseFloat(String(row[amountColIdx]).replace(/[^0-9,-]+/g,"").replace(",", "."));
+      if (isNaN(amount) || amount <= 0) return;
+      let paymentDate;
+      const dateCell = row[dateColIdx];
+      if (dateCell instanceof Date) paymentDate = dateCell;
+      else if (typeof dateCell === 'string' && dateCell) paymentDate = parseDDMMYYYY(dateCell);
+      if (!paymentDate || isNaN(paymentDate.getTime())) return;
+      unassignedPayments.push({ amount, desc: row[descColIdx], date: paymentDate, extractedName: extractNameFromDescription(row[descColIdx]), paymentId: `row|${index + 2}` });
+    }
+  });
+
+  ordersData.shift();
+  const REAL_ORDER_ID_COL = 0, REAL_CUSTOMER_NAME_COL = 1, REAL_STATUS_COL = 7, REAL_ORDER_DATE_COL = 8, REAL_TOTAL_AMOUNT_COL = 15, REAL_PAYMENT_METHOD_COL = 18, REAL_PHONE_COL = 3, REAL_RUT_COL = 16;
+  const pendingOrdersMap = {};
+  ordersData.forEach((row, index) => {
+    const orderId = row[REAL_ORDER_ID_COL];
+    if (!orderId) return;
+    const status = String(row[REAL_STATUS_COL]).trim();
+    const method = row[REAL_PAYMENT_METHOD_COL];
+    const orderDate = new Date(row[REAL_ORDER_DATE_COL]);
+    const isEligible = (method === 'bacs' && (status === 'En Espera de Pago' || status === 'Procesando') && orderDate instanceof Date && !isNaN(orderDate));
+    if (isEligible && !pendingOrdersMap[orderId]) {
+       const totalAmount = parseFloat(String(row[REAL_TOTAL_AMOUNT_COL]).replace(/[^0-9,-]+/g,"").replace(",","."));
+       if (isNaN(totalAmount) || totalAmount <= 0) return;
+       pendingOrdersMap[orderId] = { orderId, customerName: row[REAL_CUSTOMER_NAME_COL], phone: row[REAL_PHONE_COL], normalizedPhone: normalizePhoneNumber(row[REAL_PHONE_COL]), totalAmount, date: orderDate, status, rowNumber: index + 2, customerRUT: row[REAL_RUT_COL] };
+    }
+  });
+  let pendingOrders = Object.values(pendingOrdersMap);
+
+  // --- 3. Matching Logic ---
+  const historicalSuggestions = [], highConfidenceSuggestions = [], lowConfidenceSuggestions = [];
+  const matchedPaymentIds = new Set(), matchedOrderIds = new Set();
+
+  const clientBankMap = new Map(clientBankData.slice(1).map(row => [row[0], row[1]]));
+
+  // Tier 1: Historical Matching
+  unassignedPayments.forEach(payment => {
+    const paymentIdentifier = payment.extractedName;
+    const customerRUT = clientBankMap.get(paymentIdentifier);
+    if (customerRUT) {
+      const order = pendingOrders.find(o => o.customerRUT === customerRUT && !matchedOrderIds.has(o.orderId));
+      if (order) {
+        historicalSuggestions.push({ payment, order });
+        matchedPaymentIds.add(payment.paymentId);
+        matchedOrderIds.add(order.orderId);
+      }
+    }
+  });
+
+  // Tiers 2 & 3: Score-Based Matching
+  unassignedPayments.filter(p => !matchedPaymentIds.has(p.paymentId)).forEach(payment => {
+    let bestMatch = { order: null, score: 0, amountScore: 0, nameScore: 0, dateScore: 0 };
+    pendingOrders.filter(o => !matchedOrderIds.has(o.orderId)).forEach(order => {
+      if (payment.date < new Date(order.date.getTime() - 24*60*60*1000)) return;
+      const amountDiff = Math.abs(payment.amount - order.totalAmount);
+      let amountScore = 0;
+      if (amountDiff === 0) amountScore = 100;
+      else if (amountDiff < 5000) amountScore = 100 - (amountDiff / 50);
+      else return;
+      const msPerDay = 1000 * 60 * 60 * 24;
+      const dayDifference = Math.floor((new Date(payment.date.getFullYear(), payment.date.getMonth(), payment.date.getDate()) - new Date(order.date.getFullYear(), order.date.getMonth(), order.date.getDate())) / msPerDay);
+      if (dayDifference < 0) return;
+      const dateScore = Math.max(0, 100 - (dayDifference * 10));
+      if (dateScore <= 0 && dayDifference > 0) return;
+      const nameScore = calculateNameSimilarity(payment.extractedName, order.customerName);
+      if (nameScore < 20) return;
+      const totalScore = (amountScore * 0.5) + (nameScore * 0.3) + (dateScore * 0.2);
+      if (totalScore > bestMatch.score) bestMatch = { order, score: totalScore, amountScore, nameScore, dateScore };
+    });
+
+    if (bestMatch.order && bestMatch.score > 65) {
+      const suggestion = { payment, order: bestMatch.order, score: Math.round(bestMatch.score), amountScore: Math.round(bestMatch.amountScore), nameScore: Math.round(bestMatch.nameScore), dateScore: Math.round(bestMatch.dateScore) };
+      if (bestMatch.amountScore === 100) highConfidenceSuggestions.push(suggestion);
+      else lowConfidenceSuggestions.push(suggestion);
+      matchedPaymentIds.add(payment.paymentId);
+      matchedOrderIds.add(bestMatch.order.orderId);
+    }
+  });
+
+  // --- 4. Prepare return data ---
+  const formatDate = (date) => (date instanceof Date && !isNaN(date)) ? Utilities.formatDate(date, Session.getScriptTimeZone(), "dd/MM/yyyy") : "Fecha Inválida";
+  const formatSuggestion = s => ({ ...s, payment: { ...s.payment, date: formatDate(s.payment.date) }, order: { ...s.order, date: formatDate(s.order.date) } });
+
+  const manualListOrders = pendingOrders.filter(o => o.status === 'En Espera de Pago');
+
+  return {
+    historicalSuggestions: historicalSuggestions.map(formatSuggestion),
+    highConfidenceSuggestions: highConfidenceSuggestions.map(formatSuggestion),
+    lowConfidenceSuggestions: lowConfidenceSuggestions.map(formatSuggestion),
+    unmatchedPayments: unassignedPayments.map(p => ({ ...p, date: formatDate(p.date) })),
+    manualListOrders: manualListOrders.map(o => ({ ...o, date: formatDate(o.date) }))
+  };
+}
+
+
+// --- LÓGICA DEL DASHBOARD ---
+
+function showDashboard() {
+  const html = HtmlService.createHtmlOutputFromFile('DashboardDialog')
+    .setWidth(1200)
+    .setHeight(800);
+  SpreadsheetApp.getUi().showModalDialog(html, 'Dashboard de Operaciones');
+}
+
+function startDashboardRefresh() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const ordersSheet = ss.getSheetByName('Orders');
+  if (!ordersSheet) {
+    throw new Error('No se encontró la hoja "Orders".');
+  }
+  const orderData = ordersSheet.getRange("A2:B" + ordersSheet.getLastRow()).getValues();
+  const customerOrders = {};
+  orderData.forEach(([orderNumber, customerName]) => {
+    if (customerName) {
+      if (!customerOrders[customerName]) customerOrders[customerName] = new Set();
+      customerOrders[customerName].add(orderNumber);
+    }
+  });
+  const duplicates = {};
+  for (const customer in customerOrders) {
+    if (customerOrders[customer].size > 1) {
+      duplicates[customer] = Array.from(customerOrders[customer]);
+    }
+  }
+  if (Object.keys(duplicates).length > 0) {
+    showDuplicateDialog(duplicates);
+  } else {
+    checkForNewSuppliers();
+  }
+}
+
+function showDuplicateDialog(duplicateData) {
+  const template = HtmlService.createTemplateFromFile('DuplicateDialog');
+  template.duplicates = JSON.stringify(duplicateData);
+  const html = template.evaluate().setWidth(700).setHeight(500);
+  SpreadsheetApp.getUi().showModalDialog(html, 'Resolver Pedidos Duplicados');
+}
+
+function deleteOrdersByNumber(orderNumbersToDelete) {
+  if (!orderNumbersToDelete || orderNumbersToDelete.length === 0) return "No se seleccionó ningún pedido para eliminar.";
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheet = ss.getSheetByName('Orders');
+  const data = sheet.getDataRange().getValues();
+  const rowsToDelete = [];
+  for (let i = data.length - 1; i >= 1; i--) {
+    if (orderNumbersToDelete.includes(String(data[i][0]))) {
+      rowsToDelete.push(i + 1);
+    }
+  }
+  if (rowsToDelete.length > 0) {
+    rowsToDelete.forEach(rowNum => sheet.deleteRow(rowNum));
+    checkForNewSuppliers();
+    return `Se eliminaron ${rowsToDelete.length} filas. Continuando con el chequeo de proveedores...`;
+  } else {
+    return "No se encontraron los pedidos seleccionados.";
+  }
+}
+
+function checkForNewSuppliers() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const skuSheet = ss.getSheetByName("SKU");
+  const proveedoresSheet = ss.getSheetByName("Proveedores");
+  if (!skuSheet || !proveedoresSheet) {
+    SpreadsheetApp.getUi().alert("Faltan las hojas 'SKU' o 'Proveedores'.");
+    return;
+  }
+  const skuSuppliers = new Set(skuSheet.getRange("I2:I" + skuSheet.getLastRow()).getValues().flat().filter(String));
+  const existingSuppliers = new Set(proveedoresSheet.getRange("A2:A" + proveedoresSheet.getLastRow()).getValues().flat().filter(String));
+  const newSuppliers = [...skuSuppliers].filter(s => !existingSuppliers.has(s));
+  if (newSuppliers.length > 0) {
+    showNewSupplierDialog(newSuppliers);
+  } else {
+    SpreadsheetApp.getUi().alert("Todos los datos están limpios y consistentes. Ahora puedes cargar las métricas en el dashboard.");
+  }
+}
+
+function showNewSupplierDialog(newSuppliers) {
+  const template = HtmlService.createTemplateFromFile('NewSupplierDialog');
+  template.newSuppliers = JSON.stringify(newSuppliers);
+  const html = template.evaluate().setWidth(600).setHeight(400);
+  SpreadsheetApp.getUi().showModalDialog(html, 'Añadir Teléfonos de Proveedores Nuevos');
+}
+
+function saveNewSuppliers(supplierData) {
+  const proveedoresSheet = ss.getSheetByName("Proveedores");
+  const dataToAppend = Object.entries(supplierData);
+  if (dataToAppend.length > 0) {
+    proveedoresSheet.getRange(proveedoresSheet.getLastRow() + 1, 1, dataToAppend.length, 2).setValues(dataToAppend);
+  }
+  SpreadsheetApp.getUi().alert("Proveedores guardados. Ya puedes cargar las métricas en el dashboard.");
+}
+
+function getDashboardMetrics() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const ordersSheet = ss.getSheetByName('Orders');
+  const acqSheet = ss.getSheetByName('Lista de Adquisiciones');
+  const ordersData = ordersSheet.getRange("A2:N" + ordersSheet.getLastRow()).getValues();
+  let totalSales = 0;
+  let totalItemsToPackage = 0;
+  const orderIds = new Set();
+  const productQuantities = {};
+  const communeCounts = {};
+  ordersData.forEach(row => {
+    const [orderId, , , , , , commune, , , productName, quantity, , lineTotal] = row;
+    if (orderId) orderIds.add(orderId);
+    if (lineTotal) totalSales += parseFloat(lineTotal) || 0;
+    if (quantity) totalItemsToPackage += parseInt(quantity, 10) || 0;
+    if (productName && quantity) {
+      productQuantities[productName] = (productQuantities[productName] || 0) + (parseInt(quantity, 10) || 0);
+    }
+    if (commune) {
+      const orderKey = `${orderId}-${commune}`;
+      if (!communeCounts[orderKey]) {
+          communeCounts[orderKey] = commune;
+      }
+    }
+  });
+  const communeTally = {};
+  Object.values(communeCounts).forEach(c => communeTally[c] = (communeTally[c] || 0) + 1);
+
+  let totalCosts = 0;
+  if (acqSheet && acqSheet.getLastRow() > 1) {
+    const acqData = acqSheet.getRange("B2:K" + acqSheet.getLastRow()).getValues();
+    acqData.forEach(row => {
+      const qtyToBuy = row[1];
+      const priceToday = row[10];
+      if (qtyToBuy && priceToday) {
+        totalCosts += (parseFloat(qtyToBuy) || 0) * (parseFloat(priceToday) || 0);
+      }
+    });
+  }
+  const grossMargin = totalSales - totalCosts;
+  const marginPercentage = totalSales > 0 ? (grossMargin / totalSales) * 100 : 0;
+  const topSoldProducts = Object.entries(productQuantities).sort(([, a], [, b]) => b - a).slice(0, 5);
+  const communeDistribution = Object.entries(communeTally).sort(([, a], [, b]) => b - a);
+  return { totalSales, totalCosts, grossMargin, marginPercentage, orderCount: orderIds.size, totalItemsToPackage, topSoldProducts, communeDistribution };
+}
+
+function futureModulePlaceholder() {
+  SpreadsheetApp.getUi().alert("Este módulo será implementado en una futura actualización.");
+}
+
+// --- FLUJO DE ENVASADO ---
+
+function startPackagingProcess() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const ordersSheet = ss.getSheetByName('Orders');
+  const skuSheet = ss.getSheetByName('SKU');
+  if (!ordersSheet || !skuSheet) {
+    SpreadsheetApp.getUi().alert('Error: Faltan las hojas "Orders" o "SKU".');
+    return;
+  }
+  const newProducts = getNewProducts(ordersSheet, skuSheet);
+  if (newProducts.length > 0) {
+    showBatchUpdateDialog(newProducts);
+  } else {
+    showCategorySelectionDialog();
+  }
+}
+
+function showBatchUpdateDialog(productList) {
+  const template = HtmlService.createTemplateFromFile('Dialog');
+  template.productList = JSON.stringify(productList);
+  const html = template.evaluate().setWidth(800).setHeight(600);
+  SpreadsheetApp.getUi().showModalDialog(html, 'Paso 1: Añadir Nuevos Productos a SKU');
+}
+
+function saveSkuData(data) {
+  const skuSheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('SKU');
+  skuSheet.appendRow([data.nombreProducto, data.productoBase, data.formato, data.cantidad, data.unidad, data.categoria, data.cantidadVenta, data.unidadVenta, '']);
+  return { status: 'success' };
+}
+
+function triggerCategoryDialog() {
+  showCategorySelectionDialog();
+}
+
+function showCategorySelectionDialog() {
+  const html = HtmlService.createHtmlOutputFromFile('CategoryDialog').setWidth(500).setHeight(450);
+  SpreadsheetApp.getUi().showModalDialog(html, 'Paso 2: Seleccionar Categorías para Envasado');
+}
+
+function getPackagingData() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const ordersSheet = ss.getSheetByName('Orders');
+  const skuSheet = ss.getSheetByName('SKU');
+  const skuMap = getSkuMap(skuSheet);
+  const orderData = ordersSheet.getRange("J2:K" + ordersSheet.getLastRow()).getValues();
+  const productTotals = {};
+  orderData.forEach(([name, qty]) => {
+    if (name && qty) {
+      if (!productTotals[name]) { productTotals[name] = 0; }
+      productTotals[name] += parseInt(qty, 10) || 0;
+    }
+  });
+  const categorySummary = {};
+  for (const productName in productTotals) {
+    const category = skuMap[productName] ? skuMap[productName].category : 'Sin Categoría';
+    if (!categorySummary[category]) { categorySummary[category] = { count: 0, products: {} }; }
+    categorySummary[category].count++;
+    categorySummary[category].products[productName] = productTotals[productName];
+  }
+  return categorySummary;
+}
+
+function generatePackagingSheet(selectedCategories) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const data = getPackagingData();
+  let sheet = ss.getSheetByName("Lista de Envasado");
+  if (sheet) { sheet.clear(); } else { sheet = ss.insertSheet("Lista de Envasado"); }
+  let currentRow = 1;
+  sheet.getRange("A1:C1").setValues([["Cantidad", "Inventario", "Nombre Producto"]]).setFontWeight("bold");
+  selectedCategories.sort().forEach(category => {
+    currentRow++;
+    sheet.getRange(currentRow, 1, 1, 3).merge().setValue(category.toUpperCase()).setFontWeight("bold").setHorizontalAlignment("center").setBackground("#f2f2f2");
+    currentRow++;
+    const products = data[category].products;
+    const sortedProductNames = Object.keys(products).sort();
+    sortedProductNames.forEach(productName => {
+      sheet.getRange(currentRow, 1).setValue(products[productName]);
+      sheet.getRange(currentRow, 3).setValue(productName);
+      currentRow++;
+    });
+  });
+  sheet.autoResizeColumns(1, 3);
+  const printUrl = `https://docs.google.com/spreadsheets/d/${ss.getId()}/export?format=pdf&gid=${sheet.getSheetId()}&portrait=true&fitw=true&gridlines=false&printtitle=false`;
+  return printUrl;
+}
+
+// --- FLUJO DE ADQUISICIONES ---
+
+function getAcquisitionDataForEditor() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const ordersSheet = ss.getSheetByName('Orders');
+  const skuSheet = ss.getSheetByName('SKU');
+  const proveedoresSheet = ss.getSheetByName('Proveedores');
+
+  if (!ordersSheet || !skuSheet || !proveedoresSheet) {
+    throw new Error('Faltan una o más hojas requeridas: "Orders", "SKU", o "Proveedores".');
+  }
+
+  // 1. Generar el plan de adquisiciones (lógica reutilizada)
+  const { productToSkuMap, baseProductPurchaseOptions } = getPurchaseDataMaps(skuSheet);
+  const baseProductNeeds = calculateBaseProductNeeds(ordersSheet, productToSkuMap);
+  const acquisitionPlan = createAcquisitionPlan(baseProductNeeds, baseProductPurchaseOptions);
+
+  // 2. Obtener la lista de proveedores
+  const supplierData = proveedoresSheet.getRange("A2:A" + proveedoresSheet.getLastRow()).getValues().flat().filter(String);
+  const supplierSet = new Set(supplierData);
+  supplierSet.add("Patio Mayorista"); // Asegurarse de que "Patio Mayorista" esté disponible
+
+  // Convertir el plan de un objeto a un array para que sea más fácil de manejar en el lado del cliente
+  const planAsArray = Object.values(acquisitionPlan);
+
+  return {
+    acquisitionPlan: planAsArray,
+    allSuppliers: Array.from(supplierSet).sort()
+  };
+}
+
+function showAcquisitionEditor() {
+  const dataForEditor = getAcquisitionDataForEditor();
+  const template = HtmlService.createTemplateFromFile('AcquisitionEditorDialog');
+  // Pasar el objeto de datos directamente al template. La serialización se hará en el lado del cliente.
+  template.data = dataForEditor;
+  const html = template.evaluate().setWidth(1100).setHeight(700);
+  SpreadsheetApp.getUi().showModalDialog(html, 'Editar Borrador de Adquisiciones');
+}
+
+function saveAcquisitions(finalPlan) {
+  // finalPlan es un array de objetos desde el cliente.
+  // Cada objeto: { productName, quantity, selectedFormatString, supplier, totalNeed, unit, allFormatStrings, allFormatObjects }
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  let sheet = ss.getSheetByName("Lista de Adquisiciones");
+  if (sheet) {
+    sheet.clear();
+    sheet.clearConditionalFormatRules();
+  } else {
+    sheet = ss.insertSheet("Lista de Adquisiciones");
+  }
+
+  // Escribir datos en un formato plano para mayor robustez, con una columna de proveedor.
+  const headers = ["Producto Base", "Cantidad a Comprar", "Formato de Compra", "Inventario Actual", "Unidad Inventario Actual", "Necesidad de Venta", "Unidad Venta", "Inventario al Finalizar", "Unidad Inventario Final", "Precio Adq. Anterior", "Precio Adq. HOY", "Proveedor"];
+  sheet.getRange("A1:L1").setValues([headers]).setFontWeight("bold");
+  sheet.getRange("A1:C1").setBackground("#d9ead3");
+  sheet.getRange("D1:E1").setBackground("#fff2cc");
+  sheet.getRange("F1:K1").setBackground("#f4cccc");
+  sheet.getRange("L1").setBackground("#d9d9d9");
+  sheet.setFrozenRows(1);
+
+  const dataToWrite = [];
+  finalPlan.forEach(p => {
+    const selectedFormatObject = p.allFormatObjects.find(f => `${f.name} (${f.size} ${f.unit})` === p.selectedFormatString);
+    const formatSize = selectedFormatObject ? selectedFormatObject.size : 0;
+
+    const purchasedAmount = (parseFloat(p.quantity) || 0) * formatSize;
+    const finalInventory = purchasedAmount - (parseFloat(p.totalNeed) || 0);
+
+    const rowData = [
+      p.productName, p.quantity, p.selectedFormatString, 0, p.unit,
+      p.totalNeed, p.unit, finalInventory, p.unit, "", "",
+      p.supplier || "Sin Proveedor"
+    ];
+    dataToWrite.push(rowData);
+  });
+
+  if (dataToWrite.length > 0) {
+    sheet.getRange(2, 1, dataToWrite.length, headers.length).setValues(dataToWrite);
+
+    // Aplicar la validación de datos a toda la columna de formato de una vez
+    const formatColumnRange = sheet.getRange("C2:C" + (dataToWrite.length + 1));
+    // Nota: Esta validación será la misma para todas las celdas (la del último producto).
+    // Una validación por celda es necesaria si los formatos varían mucho.
+    finalPlan.forEach((p, index) => {
+      const rule = SpreadsheetApp.newDataValidation().requireValueInList(p.allFormatStrings).build();
+      sheet.getRange(index + 2, 3).setDataValidation(rule);
+    });
+  }
+
+  sheet.autoResizeColumns(1, headers.length);
+
+  return { status: "success", message: "Lista de adquisiciones guardada con éxito." };
+}
+
+function generateAcquisitionDRAFT() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const ordersSheet = ss.getSheetByName('Orders');
+  const skuSheet = ss.getSheetByName('SKU');
+  if (!ordersSheet || !skuSheet) {
+    SpreadsheetApp.getUi().alert('Faltan las hojas "Orders" o "SKU".');
+    return;
+  }
+  const { productToSkuMap, baseProductPurchaseOptions } = getPurchaseDataMaps(skuSheet);
+  const baseProductNeeds = calculateBaseProductNeeds(ordersSheet, productToSkuMap);
+  const acquisitionPlan = createAcquisitionPlan(baseProductNeeds, baseProductPurchaseOptions);
+  let sheet = ss.getSheetByName("Lista de Adquisiciones");
+  if (sheet) {
+    sheet.clear();
+    sheet.clearConditionalFormatRules();
+  } else {
+    sheet = ss.insertSheet("Lista de Adquisiciones");
+  }
+  const headers = ["Producto Base", "Cantidad a Comprar", "Formato de Compra", "Inventario Actual", "Unidad Inventario Actual", "Necesidad de Venta", "Unidad Venta", "Inventario al Finalizar", "Unidad Inventario Final", "Precio Adq. Anterior", "Precio Adq. HOY"];
+  sheet.getRange("A1:K1").setValues([headers]).setFontWeight("bold");
+  sheet.getRange("A1:C1").setBackground("#d9ead3");
+  sheet.getRange("D1:E1").setBackground("#fff2cc");
+  sheet.getRange("F1:K1").setBackground("#f4cccc");
+  sheet.setFrozenRows(1);
+  const dataBySupplier = groupPlanBySupplier(acquisitionPlan);
+  let currentRow = 2;
+  const sortedSuppliers = Object.keys(dataBySupplier).sort();
+  sortedSuppliers.forEach(supplier => {
+    sheet.getRange(currentRow, 1, 1, headers.length).merge().setValue(supplier).setFontWeight("bold").setHorizontalAlignment("center").setBackground("#d9d9d9");
+    currentRow++;
+    const products = dataBySupplier[supplier];
+    products.forEach(p => {
+      const suggestedFormatString = `${p.suggestedFormat.name} (${p.suggestedFormat.size} ${p.suggestedFormat.unit})`;
+      const totalComprado = p.suggestedQty * p.suggestedFormat.size;
+      const inventarioFinal = 0 + totalComprado - p.totalNeed;
+      sheet.getRange(currentRow, 1, 1, headers.length).setValues([[p.productName, p.suggestedQty, suggestedFormatString, 0, p.unit, p.totalNeed, p.saleUnit, inventarioFinal, p.unit, "", ""]]);
+      const formatOptions = p.availableFormats.map(f => `${f.name} (${f.size} ${f.unit})`);
+      const rule = SpreadsheetApp.newDataValidation().requireValueInList(formatOptions).build();
+      sheet.getRange(currentRow, 3).setDataValidation(rule);
+      currentRow++;
+    });
+  });
+  sheet.autoResizeColumns(1, headers.length);
+  SpreadsheetApp.getUi().alert("Borrador de 'Lista de Adquisiciones' generado con éxito.");
+}
+
+function recalculateRowInventory(sheet, row) {
+  const dataRange = sheet.getRange(`A${row}:H${row}`);
+  const values = dataRange.getValues()[0];
+  const [productoBase, cantidadAComprar, formatoDeCompra, inventarioActual, unidadInvActual, necesidadDeVenta, unidadVenta] = values;
+  const multiplierMatch = String(formatoDeCompra).match(/\((\d+(\.\d+)?)/);
+  const multiplier = multiplierMatch ? parseFloat(multiplierMatch[1]) : 0;
+  const totalComprado = (parseFloat(String(cantidadAComprar).replace(",", ".")) || 0) * multiplier;
+  const inventarioFinal = (parseFloat(String(inventarioActual).replace(",", ".")) || 0) + totalComprado - (parseFloat(String(necesidadDeVenta).replace(",", ".")) || 0);
+  sheet.getRange(row, 8).setValue(inventarioFinal);
+}
+
+function startNotificationProcess() {
+  const html = HtmlService.createHtmlOutputFromFile('NotificationDialog').setWidth(600).setHeight(400);
+  SpreadsheetApp.getUi().showModalDialog(html, 'Panel de Notificación a Proveedores');
+}
+
+function getSupplierList() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const acquisitionsSheet = ss.getSheetByName("Lista de Adquisiciones");
+  if (!acquisitionsSheet || acquisitionsSheet.getLastRow() < 2) {
+    return [];
+  }
+  const supplierData = acquisitionsSheet.getRange("L2:L" + acquisitionsSheet.getLastRow()).getValues();
+  const suppliers = new Set();
+  supplierData.forEach(row => {
+    if (row[0]) {
+      suppliers.add(String(row[0]).trim());
+    }
+  });
+  return Array.from(suppliers).sort();
+}
+
+function getOrdersForSupplier(supplierName) {
+  if (!supplierName) {
+    throw new Error("Se requiere un nombre de proveedor.");
+  }
+
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const acquisitionsSheet = ss.getSheetByName("Lista de Adquisiciones");
+  const proveedoresSheet = ss.getSheetByName("Proveedores");
+  const skuSheet = ss.getSheetByName("SKU");
+
+  if (!acquisitionsSheet) throw new Error("No se encuentra la hoja 'Lista de Adquisiciones'.");
+  if (!proveedoresSheet) throw new Error("No se encuentra la hoja 'Proveedores'.");
+  if (!skuSheet) throw new Error("No se encuentra la hoja 'SKU'.");
+
+  const phoneMapProveedores = new Map();
+  if (proveedoresSheet.getLastRow() > 1) {
+    const phoneData = proveedoresSheet.getRange("A2:B" + proveedoresSheet.getLastRow()).getValues();
+    phoneData.forEach(([name, phone]) => {
+      if (name && phone) phoneMapProveedores.set(String(name).trim(), String(phone).trim());
+    });
+  }
+  const phoneMapSku = new Map();
+  if (skuSheet.getLastRow() > 1) {
+    const skuSupplierData = skuSheet.getRange("I2:J" + skuSheet.getLastRow()).getValues();
+    skuSupplierData.forEach(([supplier, phone]) => {
+      if (supplier && phone) {
+        const supName = String(supplier).trim();
+        if (!phoneMapSku.has(supName)) phoneMapSku.set(supName, String(phone).trim());
+      }
+    });
+  }
+  const phone = phoneMapProveedores.get(supplierName) || phoneMapSku.get(supplierName) || 'No encontrado';
+
+  const orders = [];
+  if (acquisitionsSheet.getLastRow() > 1) {
+    const allData = acquisitionsSheet.getRange("A2:L" + acquisitionsSheet.getLastRow()).getValues();
+    allData.forEach(row => {
+      const [product, quantity, format, , , , , , , , , supplier] = row;
+      if (supplier && String(supplier).trim() === supplierName) {
+        if (product && quantity && parseFloat(String(quantity).replace(',', '.')) !== 0) {
+          orders.push({
+            product: String(product).trim(),
+            quantity: quantity,
+            format: String(format).trim()
+          });
+        }
+      }
+    });
+  }
+
+  return {
+    phone: phone,
+    orders: orders
+  };
+}
+
+// --- FUNCIONES AUXILIARES ---
+
+function parseDDMMYYYY(dateString) {
+  if (!dateString || typeof dateString !== 'string') return null;
+  const parts = dateString.split('/');
+  if (parts.length !== 3) return null;
+  // new Date(year, monthIndex, day)
+  return new Date(parts[2], parts[1] - 1, parts[0]);
+}
+
+function extractNameFromDescription(description) {
+  if (!description || typeof description !== 'string') return '';
+  const match = description.match(/(?:transf de|de)\s(.+)/i);
+  if (match && match[1]) {
+    return match[1].replace(/[0-9]/g, '').trim();
+  }
+  let cleaned = description.replace(/transf/i, '')
+                           .replace(/pago/i, '')
+                           .replace(/[0-9]/g, '')
+                           .trim();
+  return cleaned;
+}
+
+function calculateNameSimilarity(nameFromPayment, nameFromOrder) {
+  if (!nameFromPayment || !nameFromOrder) return 0;
+
+  const normalize = (str) => str.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").split(/\s+/);
+
+  const wordsFromPayment = normalize(nameFromPayment);
+  const wordsFromOrder = normalize(nameFromOrder);
+
+  if (wordsFromPayment.length === 0 || wordsFromOrder.length === 0) return 0;
+
+  let matches = 0;
+  for (const pWord of wordsFromPayment) {
+    for (const oWord of wordsFromOrder) {
+      if (oWord.startsWith(pWord) || pWord.startsWith(oWord)) {
+        matches++;
+        break;
+      }
+    }
+  }
+
+  return (matches / wordsFromPayment.length) * 100;
+}
+
+function normalizePhoneNumber(phone) {
+  if (!phone) return '';
+  const originalPhoneStr = String(phone);
+  let phoneStr = originalPhoneStr.trim();
+
+  // Clean up common prefixes like '=' or '+'
+  if (phoneStr.startsWith('=') || phoneStr.startsWith('+')) {
+    phoneStr = phoneStr.substring(1);
+  }
+  if (phoneStr.startsWith('+')) { // In case of '=+'
+    phoneStr = phoneStr.substring(1);
+  }
+
+  // Handle the `...123` suffix
+  if (phoneStr.endsWith('123')) {
+    let coreNumber = phoneStr.slice(0, -3);
+    if (coreNumber.length === 9 && coreNumber.startsWith('9')) {
+      return `56${coreNumber}`;
+    }
+  }
+
+  // Handle standard Chilean formats if the special suffix format didn't match
+  if (phoneStr.startsWith('569') && phoneStr.length === 11) {
+    return phoneStr;
+  }
+  if (phoneStr.length === 9 && phoneStr.startsWith('9')) {
+    return `56${phoneStr}`;
+  }
+  if (phoneStr.length === 8) {
+    return `569${phoneStr}`;
+  }
+
+  // Final Fallback: If no specific format was matched, strip all non-numeric characters.
+  return originalPhoneStr.replace(/\D/g, '');
+}
+
+function getNewProducts(ordersSheet, skuSheet) {
+  const ordersData = ordersSheet.getRange('J2:J' + ordersSheet.getLastRow()).getValues();
+  const skuData = skuSheet.getRange('A2:A' + skuSheet.getLastRow()).getValues();
+  const orderProducts = ordersData.map(row => row[0]).filter(String);
+  const skuProducts = new Set(skuData.map(row => row[0]).filter(String));
+  return [...new Set(orderProducts)].filter(product => !skuProducts.has(product));
+}
+
+function getSkuMap(skuSheet) {
+  const skuData = skuSheet.getRange("A2:I" + skuSheet.getLastRow()).getValues();
+  const skuMap = {};
+  skuData.forEach(row => {
+    let [name, base, format, qty, unit, category, saleQty, saleUnit, supplier] = row;
+    if (name) {
+      category = normalizeString(category);
+      unit = normalizeUnit(unit);
+      saleUnit = normalizeUnit(saleUnit);
+      skuMap[name] = { base, format, qty, unit, category, saleQty, saleUnit, supplier };
+    }
+  });
+  return skuMap;
+}
+
+function getPurchaseDataMaps(skuSheet) {
+  const skuData = skuSheet.getRange("A2:I" + skuSheet.getLastRow()).getValues();
+  const productToSkuMap = {};
+  const baseProductPurchaseOptions = {};
+  skuData.forEach(row => {
+    const [nombreProducto, productoBase, formatoCompra, cantidadCompra, unidadCompra, cat, cantVenta, unidadVenta, proveedor] = row;
+    if (nombreProducto) {
+      productToSkuMap[nombreProducto] = {
+        productoBase,
+        cantidadVenta: parseFloat(String(cantVenta).replace(',', '.')) || 0,
+        unidadVenta: normalizeUnit(unidadVenta)
+      };
+    }
+    if (productoBase && formatoCompra) {
+      if (!baseProductPurchaseOptions[productoBase]) {
+        baseProductPurchaseOptions[productoBase] = { options: [], suppliers: new Set() };
+      }
+      baseProductPurchaseOptions[productoBase].options.push({
+        name: formatoCompra,
+        size: parseFloat(String(cantidadCompra).replace(',', '.')) || 0,
+        unit: normalizeUnit(unidadCompra)
+      });
+      if (proveedor) baseProductPurchaseOptions[productoBase].suppliers.add(proveedor);
+    }
+  });
+  return { productToSkuMap, baseProductPurchaseOptions };
+}
+
+function calculateBaseProductNeeds(ordersSheet, productToSkuMap) {
+  const orderData = ordersSheet.getRange("J2:K" + ordersSheet.getLastRow()).getValues();
+  const baseProductNeeds = {};
+  orderData.forEach(([name, qty]) => {
+    if (name && qty && productToSkuMap[name]) {
+      const skuInfo = productToSkuMap[name];
+      const baseProduct = skuInfo.productoBase;
+      const saleUnit = normalizeUnit(skuInfo.unidadVenta);
+      const totalSaleAmount = (parseInt(qty, 10) || 0) * skuInfo.cantidadVenta;
+      if (!baseProductNeeds[baseProduct]) baseProductNeeds[baseProduct] = {};
+      if (!baseProductNeeds[baseProduct][saleUnit]) baseProductNeeds[baseProduct][saleUnit] = 0;
+      baseProductNeeds[baseProduct][saleUnit] += totalSaleAmount;
+    }
+  });
+  return baseProductNeeds;
+}
+
+function createAcquisitionPlan(baseProductNeeds, baseProductPurchaseOptions) {
+  const acquisitionPlan = {};
+  for (const baseProduct in baseProductNeeds) {
+    if (baseProductPurchaseOptions[baseProduct]) {
+      const needs = baseProductNeeds[baseProduct];
+      const purchaseInfo = baseProductPurchaseOptions[baseProduct];
+      const purchaseOptions = purchaseInfo.options;
+      const needUnit = Object.keys(needs)[0];
+      const totalNeed = needs[needUnit];
+      let bestOption = null;
+      let minWaste = Infinity;
+      purchaseOptions.forEach((option) => {
+        if (option.unit === needUnit && option.size > 0) {
+          const numToBuy = Math.ceil(totalNeed / option.size);
+          const waste = (numToBuy * option.size) - totalNeed;
+          if (waste < minWaste) {
+            minWaste = waste;
+            bestOption = { ...option, suggestedQty: numToBuy };
+          }
+        }
+      });
+      if (bestOption) {
+        acquisitionPlan[baseProduct] = {
+          productName: baseProduct,
+          totalNeed,
+          unit: needUnit,
+          saleUnit: needUnit,
+          supplier: Array.from(purchaseInfo.suppliers).join(', '),
+          availableFormats: purchaseOptions,
+          suggestedFormat: bestOption,
+          suggestedQty: bestOption.suggestedQty
+        };
+      }
+    }
+  }
+  return acquisitionPlan;
+}
+
+function groupPlanBySupplier(acquisitionPlan) {
+  const dataBySupplier = {};
+  for (const productName in acquisitionPlan) {
+    const productData = acquisitionPlan[productName];
+    const supplier = productData.supplier || "Sin Proveedor";
+    if (!dataBySupplier[supplier]) dataBySupplier[supplier] = [];
+    dataBySupplier[supplier].push(productData);
+  }
+  return dataBySupplier;
+}
+
+function normalizeString(str) {
+  if (!str || typeof str !== 'string') return '';
+  return str.trim().toLowerCase().replace(/\w\S*/g, (w) => (w.replace(/^\w/, (c) => c.toUpperCase())));
+}
+
+function normalizeUnit(str) {
+  if (!str || typeof str !== 'string') return '';
+  const s = str.trim().toLowerCase();
+  if (s.startsWith('kilo')) { return 'Kg';}
+  if (s.startsWith('gr')) { return 'Gr';}
+  if (s.startsWith('unidad')) { return 'Unidad';}
+  if (s.startsWith('bandeja')) { return 'Bandeja';}
+  return normalizeString(s);
+}
+
+function getOAuthToken() {
+  DriveApp.getFolderById('root'); // Force Drive scope.
+  return ScriptApp.getOAuthToken();
+}
+
+function importOrdersFromXLSX(fileId) {
+  let tempSheetId = null;
+  try {
+    const resource = {
+      title: `[Temp] Importación de Pedidos - ${new Date().toISOString()}`,
+      mimeType: MimeType.GOOGLE_SHEETS
+    };
+    const tempFile = Drive.Files.copy(resource, fileId);
+    tempSheetId = tempFile.id;
+    const tempSpreadsheet = SpreadsheetApp.openById(tempSheetId);
+    const tempSheet = tempSpreadsheet.getSheets()[0];
+    const data = tempSheet.getDataRange().getValues();
+    if (!data || data.length < 2) {
+      throw new Error("El archivo seleccionado está vacío o no tiene datos.");
+    }
+    const mainSpreadsheet = SpreadsheetApp.getActiveSpreadsheet();
+    const ordersSheet = mainSpreadsheet.getSheetByName("Orders");
+    if (!ordersSheet) {
+      throw new Error("No se encontró la hoja 'Orders' en el libro principal.");
+    }
+    ordersSheet.getRange("A2:Z").clearContent();
+    ordersSheet.getRange(2, 1, data.length - 1, data[0].length).setValues(data.slice(1));
+    return `¡Éxito! Se han importado ${data.length - 1} filas de pedidos.`;
+  } catch (e) {
+    Logger.log(`Error en importOrdersFromXLSX: ${e.toString()}`);
+    throw new Error(`Ocurrió un error durante la importación: ${e.message}`);
+  } finally {
+    if (tempSheetId) {
+      Drive.Files.remove(tempSheetId);
+      Logger.log(`Archivo temporal eliminado: ${tempSheetId}`);
+    }
+  }
+}
+
+function formatPhoneNumbersInOrdersSheet() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheet = ss.getSheetByName("Orders");
+  if (!sheet) {
+    SpreadsheetApp.getUi().alert("No se encontró la hoja 'Orders'.");
+    return;
+  }
+
+  const phoneColumn = 4; // Column D
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 2) {
+    SpreadsheetApp.getUi().alert("No hay datos para formatear en la hoja 'Orders'.");
+    return;
+  }
+
+  const phoneRange = sheet.getRange(2, phoneColumn, lastRow - 1, 1);
+  const phoneValues = phoneRange.getValues();
+
+  let changedCount = 0;
+  const formattedPhones = phoneValues.map(row => {
+    const originalPhone = row[0];
+    if (!originalPhone) return [originalPhone];
+
+    const formatted = normalizePhoneNumber(originalPhone);
+    if (formatted !== originalPhone) {
+      changedCount++;
+    }
+    return [formatted];
+  });
+
+  phoneRange.setValues(formattedPhones);
+
+  SpreadsheetApp.getUi().alert(`Proceso completado. Se revisaron ${phoneValues.length} números. Se corrigieron ${changedCount} números de teléfono.`);
+}
