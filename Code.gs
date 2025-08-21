@@ -84,6 +84,21 @@ function setupProjectSheets() {
   if (createdSheets.length > 0) {
     SpreadsheetApp.getUi().alert(`Se han creado las siguientes hojas que faltaban para el correcto funcionamiento: ${createdSheets.join(', ')}.`);
   }
+
+  // Ensure the daily cash summary sheet exists and has the formula
+  const summarySheetName = "resumen caja diario";
+  const summaryFormula = '=IMPORTRANGE("1vCZejbBPMh73nbAhdZNYFOlvJvRoMA7PVSCUiLl8MMQ","resumen caja diario!A:G")';
+
+  let summarySheet = ss.getSheetByName(summarySheetName);
+  if (!summarySheet) {
+    summarySheet = ss.insertSheet(summarySheetName);
+  }
+
+  // Ensure the formula is in A1
+  const a1 = summarySheet.getRange("A1");
+  if (a1.getFormula() !== summaryFormula) {
+    a1.setFormula(summaryFormula);
+  }
 }
 
 function approveMatch(paymentId, orderId) {
