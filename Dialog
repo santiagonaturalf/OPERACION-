@@ -3,153 +3,166 @@
 <head>
   <base target="_top">
   <style>
-    body, html { height: 100%; margin: 0; font-family: Arial, sans-serif; display: flex; flex-direction: column; }
-    .dialog-container { display: flex; flex-grow: 1; overflow: hidden; }
-    #sidebar { width: 35%; min-width: 250px; background-color: #f4f4f4; border-right: 1px solid #ddd; display: flex; flex-direction: column; }
-    #sidebar h3 { margin: 0; padding: 15px; border-bottom: 1px solid #ddd; background-color: #e9e9e9; }
-    #product-list { list-style-type: none; margin: 0; padding: 0; overflow-y: auto; flex-grow: 1; }
-    #product-list li { padding: 12px 15px; cursor: pointer; border-bottom: 1px solid #e0e0e0; font-size: 14px; }
-    #product-list li:hover { background-color: #e0e0e0; }
-    #product-list li.selected { background-color: #4285f4; color: white; font-weight: bold; }
-    #main-content { flex-grow: 1; padding: 20px; overflow-y: auto; }
-    #form-container { display: none; }
-    #placeholder { color: #888; text-align: center; padding-top: 50px; }
-    .form-group { margin-bottom: 15px; }
-    label { display: block; margin-bottom: 5px; font-weight: bold; }
-    input[type="text"], input[type="number"] { width: 95%; padding: 8px; border-radius: 4px; border: 1px solid #ccc; }
-    .product-name-display { background-color: #f2f2f2; padding: 10px; border-radius: 4px; margin-bottom: 20px; font-weight: bold; word-wrap: break-word; }
-    .buttons { margin-top: 20px; }
-    button { padding: 10px 15px; border: none; border-radius: 4px; cursor: pointer; }
-    #submit-button { background-color: #4CAF50; color: white; }
-    #close-button { background-color: #f44336; color: white; margin-left: 10px; }
-    .nav-footer {
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; margin: 0; background-color: #f0f2f5; color: #333; }
+    .container { padding: 20px; padding-bottom: 80px; /* Space for footer */ }
+    h1 { color: #1c1e21; margin-top: 0; font-size: 24px; }
+    p { color: #606770; }
+    table { width: 100%; border-collapse: collapse; margin-top: 15px; background-color: #fff; box-shadow: 0 1px 3px rgba(0,0,0,0.12), 0 1px 2px rgba(0,0,0,0.24); }
+    th, td { padding: 12px 15px; text-align: left; border-bottom: 1px solid #ddd; }
+    th { font-weight: 600; font-size: 13px; color: #606770; background-color: #f5f6f7; }
+    td { font-size: 14px; vertical-align: middle; }
+    .product-name-cell { font-weight: 500; }
+    input {
+      width: 95%;
+      padding: 8px;
+      font-size: 14px;
+      border-radius: 4px;
+      border: 1px solid #ccc;
+      transition: border-color 0.2s;
+    }
+    input:focus { border-color: #1877f2; outline: none; }
+    .footer-actions {
       position: fixed;
       bottom: 0;
       left: 0;
       width: 100%;
-      padding: 10px;
-      background-color: #f5f5f5;
+      padding: 15px 20px;
+      background-color: #fff;
       border-top: 1px solid #ddd;
       text-align: right;
       box-sizing: border-box;
+      z-index: 10;
     }
-    .nav-footer button {
-      background-color: #007bff;
-      color: white;
+    .button {
+      padding: 10px 20px;
+      font-size: 14px;
+      font-weight: bold;
+      border-radius: 6px;
+      border: none;
+      cursor: pointer;
+      transition: background-color 0.2s;
     }
+    #save-btn { background-color: #1877f2; color: white; }
+    #save-btn:disabled { background-color: #dcdfe3; color: #bec3c9; cursor: not-allowed; }
+    #status { margin-right: 15px; color: #606770; display: none; }
   </style>
 </head>
 <body>
-  <div class="dialog-container">
-    <div id="sidebar">
-      <h3>Nuevos Productos</h3>
-      <ul id="product-list"></ul>
-    </div>
-    <div id="main-content">
-      <div id="placeholder">
-        <h4>Selecciona un producto de la lista de la izquierda para comenzar.</h4>
-      </div>
-      <div id="form-container">
-        <div class="product-name-display" id="product-name-display"></div>
-        <form id="sku-form">
-          <input type="hidden" id="nombre-producto" name="nombreProducto">
-          <div class="form-group"> <label for="producto-base">Producto Base</label> <input type="text" id="producto-base" name="productoBase" required> </div>
-          <div class="form-group"> <label for="formato">Formato</label> <input type="text" id="formato" name="formato" required> </div>
-          <div class="form-group"> <label for="cantidad">Cantidad</label> <input type="number" id="cantidad" name="cantidad" required> </div>
-          <div class="form-group"> <label for="unidad">Unidad</label> <input type="text" id="unidad" name="unidad" required> </div>
-          <div class="form-group"> <label for="categoria">Categoría</label> <input type="text" id="categoria" name="categoria" required> </div>
-          <div class="form-group"> <label for="cantidad-venta">Cantidad Venta</label> <input type="text" id="cantidad-venta" name="cantidadVenta" required> </div>
-          <div class="form-group"> <label for="unidad-venta">Unidad Venta</label> <input type="text" id="unidad-venta" name="unidadVenta" required> </div>
-          <div class="buttons"> <button type="submit" id="submit-button">Guardar Producto</button> <button type="button" id="close-button">Cerrar</button> </div>
-        </form>
-      </div>
-    </div>
+  <div class="container">
+    <h1>Paso 1: Añadir Nuevos Productos a SKU</h1>
+    <p>Los siguientes productos se encontraron en los pedidos pero no existen en la hoja "SKU". Por favor, completa la información requerida para cada uno.</p>
+    <table id="new-products-table">
+      <thead>
+        <tr>
+          <th>Nombre Producto</th>
+          <th>Producto Base</th>
+          <th>Formato Compra</th>
+          <th>Cantidad Compra</th>
+          <th>Unidad Compra</th>
+          <th>Categoría</th>
+          <th>Cantidad Venta</th>
+          <th>Unidad Venta</th>
+        </tr>
+      </thead>
+      <tbody>
+        <!-- Product rows will be inserted here by script -->
+      </tbody>
+    </table>
   </div>
-  
+
+  <div class="footer-actions">
+    <span id="status"></span>
+    <button id="save-btn" class="button">Guardar y Continuar</button>
+  </div>
+
   <script>
-    const productListEl = document.getElementById('product-list');
-    const placeholderEl = document.getElementById('placeholder');
-    const formContainerEl = document.getElementById('form-container');
-    const skuFormEl = document.getElementById('sku-form');
-    const productNameDisplayEl = document.getElementById('product-name-display');
-    const submitButton = document.getElementById('submit-button');
-    let productList = JSON.parse(<?= productList ?>);
-    let currentSelectedProductLi = null;
+    const productList = JSON.parse(<?= productList ?>);
+    const tableBody = document.querySelector("#new-products-table tbody");
+    const saveBtn = document.getElementById('save-btn');
+    const statusSpan = document.getElementById('status');
 
-    function showFormForProduct(productName, liElement) {
-      if (currentSelectedProductLi) { currentSelectedProductLi.classList.remove('selected'); }
-      liElement.classList.add('selected');
-      currentSelectedProductLi = liElement;
-      placeholderEl.style.display = 'none';
-      formContainerEl.style.display = 'block';
-      productNameDisplayEl.textContent = productName;
-      skuFormEl.elements['nombre-producto'].value = productName;
-      skuFormEl.reset();
-      productNameDisplayEl.textContent = productName;
-      skuFormEl.elements['nombre-producto'].value = productName;
-      skuFormEl.elements['producto-base'].focus();
-    }
+    function renderTable() {
+      if (!productList || productList.length === 0) {
+        tableBody.innerHTML = '<tr><td colspan="8" style="text-align:center;">No hay productos nuevos para añadir.</td></tr>';
+        saveBtn.disabled = true;
+        return;
+      }
 
-    function renderSidebar() {
-      productListEl.innerHTML = '';
-      productList.forEach(name => {
-        const li = document.createElement('li');
-        li.textContent = name;
-        li.dataset.productName = name;
-        li.addEventListener('click', () => showFormForProduct(name, li));
-        productListEl.appendChild(li);
+      productList.forEach(productName => {
+        const row = document.createElement('tr');
+        row.dataset.productName = productName;
+        row.innerHTML = `
+          <td class="product-name-cell">${productName}</td>
+          <td><input type="text" name="productoBase" required></td>
+          <td><input type="text" name="formato" required></td>
+          <td><input type="number" name="cantidad" required></td>
+          <td><input type="text" name="unidad" placeholder="Kg, Gr, Unidad"></td>
+          <td><input type="text" name="categoria" required></td>
+          <td><input type="number" name="cantidadVenta" required></td>
+          <td><input type="text" name="unidadVenta" placeholder="Kg, Gr, Unidad"></td>
+        `;
+        tableBody.appendChild(row);
       });
     }
 
-    function handleFormSubmit(e) {
-      e.preventDefault();
-      submitButton.disabled = true;
-      submitButton.textContent = 'Guardando...';
-      const formData = {
-        nombreProducto: skuFormEl.elements['nombre-producto'].value,
-        productoBase: skuFormEl.elements['producto-base'].value,
-        formato: skuFormEl.elements['formato'].value,
-        cantidad: skuFormEl.elements['cantidad'].value,
-        unidad: skuFormEl.elements['unidad'].value,
-        categoria: skuFormEl.elements['categoria'].value,
-        cantidadVenta: skuFormEl.elements['cantidad-venta'].value,
-        unidadVenta: skuFormEl.elements['unidad-venta'].value,
-      };
-      google.script.run
-        .withSuccessHandler(() => {
-          if (currentSelectedProductLi) { currentSelectedProductLi.remove(); }
-          productList = productList.filter(p => p !== formData.nombreProducto);
-          formContainerEl.style.display = 'none';
-          placeholderEl.style.display = 'block';
-          if (productList.length === 0) {
-            placeholderEl.innerHTML = '<h4>¡Completado!</h4><p>Cargando siguiente paso...</p>';
-            parent.postMessage({view: 'CategorySelection'}, '*');
+    function setLoadingState(isLoading, message) {
+      saveBtn.disabled = isLoading;
+      statusSpan.textContent = message;
+      statusSpan.style.display = isLoading ? 'inline' : 'none';
+    }
+
+    saveBtn.addEventListener('click', () => {
+      setLoadingState(true, 'Guardando productos...');
+
+      const productsToSave = [];
+      const rows = tableBody.querySelectorAll('tr');
+      let allValid = true;
+
+      rows.forEach(row => {
+        const inputs = row.querySelectorAll('input[required]');
+        inputs.forEach(input => {
+          if (!input.value) {
+            input.style.borderColor = 'red';
+            allValid = false;
           } else {
-            placeholderEl.innerHTML = '<h4>Producto guardado. Selecciona el siguiente.</h4>';
-            submitButton.disabled = false;
-            submitButton.textContent = 'Guardar Producto';
+            input.style.borderColor = '#ccc';
           }
+        });
+
+        if (allValid) {
+            productsToSave.push({
+              nombreProducto: row.dataset.productName,
+              productoBase: row.querySelector('[name="productoBase"]').value,
+              formato: row.querySelector('[name="formato"]').value,
+              cantidad: row.querySelector('[name="cantidad"]').value,
+              unidad: row.querySelector('[name="unidad"]').value,
+              categoria: row.querySelector('[name="categoria"]').value,
+              cantidadVenta: row.querySelector('[name="cantidadVenta"]').value,
+              unidadVenta: row.querySelector('[name="unidadVenta"]').value,
+            });
+        }
+      });
+
+      if (!allValid) {
+        alert("Por favor, completa todos los campos obligatorios (marcados en rojo).");
+        setLoadingState(false, '');
+        return;
+      }
+
+      google.script.run
+        .withSuccessHandler(response => {
+          setLoadingState(true, `Éxito. ${response.count} productos guardados. Cargando siguiente paso...`);
+          google.script.run.triggerCategoryDialog();
+          setTimeout(() => google.script.host.close(), 1500); // Give time for the next dialog to open
         })
         .withFailureHandler(error => {
-          alert('Error al guardar: ' + error.message);
-          submitButton.disabled = false;
-          submitButton.textContent = 'Guardar Producto';
+          alert('Error al guardar los productos: ' + error.message);
+          setLoadingState(false, '');
         })
-        .saveSkuData(formData);
-    }
-
-    function initView() {
-      renderSidebar();
-    }
-    initView();
-    skuFormEl.addEventListener('submit', handleFormSubmit);
-    document.getElementById('close-button').addEventListener('click', () => {
-      google.script.host.close();
+        .saveMultipleSkuData(productsToSave);
     });
 
-    document.getElementById('next-module-btn').addEventListener('click', () => {
-      parent.postMessage({view: 'AcquisitionEditor'}, '*');
-    });
+    window.onload = renderTable;
   </script>
 </body>
 </html>

@@ -810,10 +810,23 @@ function showBatchUpdateDialog(productList) {
   SpreadsheetApp.getUi().showModalDialog(html, 'Paso 1: Añadir Nuevos Productos a SKU');
 }
 
-function saveSkuData(data) {
+function saveMultipleSkuData(products) {
   const skuSheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('SKU');
-  skuSheet.appendRow([data.nombreProducto, data.productoBase, data.formato, data.cantidad, data.unidad, data.categoria, data.cantidadVenta, data.unidadVenta, '']);
-  return { status: 'success' };
+  const rows = products.map(p => [
+    p.nombreProducto,
+    p.productoBase,
+    p.formato,
+    p.cantidad,
+    p.unidad,
+    p.categoria,
+    p.cantidadVenta,
+    p.unidadVenta,
+    '' // Proveedor is left blank initially
+  ]);
+  if (rows.length > 0) {
+    skuSheet.getRange(skuSheet.getLastRow() + 1, 1, rows.length, rows[0].length).setValues(rows);
+  }
+  return { status: 'success', count: rows.length };
 }
 
 function triggerCategoryDialog() {
