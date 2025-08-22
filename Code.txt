@@ -741,51 +741,167 @@ function saveNewSuppliers(supplierData) {
   SpreadsheetApp.getUi().alert("Proveedores guardados. Ya puedes cargar las métricas en el dashboard.");
 }
 
-function getDashboardMetrics() {
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const ordersSheet = ss.getSheetByName('Orders');
-  const acqSheet = ss.getSheetByName('Lista de Adquisiciones');
-  const ordersData = ordersSheet.getRange("A2:N" + ordersSheet.getLastRow()).getValues();
-  let totalSales = 0;
-  let totalItemsToPackage = 0;
-  const orderIds = new Set();
-  const productQuantities = {};
-  const communeCounts = {};
-  ordersData.forEach(row => {
-    const [orderId, , , , , , commune, , , productName, quantity, , lineTotal] = row;
-    if (orderId) orderIds.add(orderId);
-    if (lineTotal) totalSales += parseFloat(lineTotal) || 0;
-    if (quantity) totalItemsToPackage += parseInt(quantity, 10) || 0;
-    if (productName && quantity) {
-      productQuantities[productName] = (productQuantities[productName] || 0) + (parseInt(quantity, 10) || 0);
-    }
-    if (commune) {
-      const orderKey = `${orderId}-${commune}`;
-      if (!communeCounts[orderKey]) {
-          communeCounts[orderKey] = commune;
-      }
-    }
-  });
-  const communeTally = {};
-  Object.values(communeCounts).forEach(c => communeTally[c] = (communeTally[c] || 0) + 1);
+// --- FUNCIONES PÚBLICAS PARA EL DASHBOARD ---
 
-  let totalCosts = 0;
-  if (acqSheet && acqSheet.getLastRow() > 1) {
-    const acqData = acqSheet.getRange("B2:K" + acqSheet.getLastRow()).getValues();
-    acqData.forEach(row => {
-      const qtyToBuy = row[1];
-      const priceToday = row[10];
-      if (qtyToBuy && priceToday) {
-        totalCosts += (parseFloat(qtyToBuy) || 0) * (parseFloat(priceToday) || 0);
+function getDashboardSummaryMetrics() {
+  try {
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    const ordersSheet = ss.getSheetByName('Orders');
+
+    // --- Lógica de costos duplicada para independencia ---
+    const costosSheet = ss.getSheetByName('CostosVenta');
+    const productCostMap = {};
+    if (costosSheet && costosSheet.getLastRow() > 1) {
+      const costosData = costosSheet.getRange("B2:C" + costosSheet.getLastRow()).getValues();
+      for (let i = costosData.length - 1; i >= 0; i--) {
+        const row = costosData[i];
+        const productName = row[0];
+        const cost = parseFloat(row[1]);
+        if (productName && !productCostMap[productName] && !isNaN(cost)) {
+          productCostMap[productName] = cost;
+        }
       }
-    });
+    }
+    // --- Fin de lógica duplicada ---
+
+    let totalSales = 0;
+    let totalCosts = 0;
+    const orderIds = new Set();
+
+    if (ordersSheet && ordersSheet.getLastRow() > 1) {
+        const ordersData = ordersSheet.getRange("A2:M" + ordersSheet.getLastRow()).getValues();
+        ordersData.forEach(row => {
+            const orderId = row[0];
+            const productName = row[9]; // Columna J: Nombre Producto
+            const quantity = row[10];
+            const lineTotal = row[12];
+
+            if (orderId) orderIds.add(orderId);
+            if (lineTotal) totalSales += parseFloat(lineTotal) || 0;
+
+            if (productName && quantity && productCostMap[productName]) {
+                totalCosts += productCostMap[productName] * (parseInt(quantity, 10) || 0);
+            }
+        });
+    }
+
+    const grossMargin = totalSales - totalCosts;
+    const marginPercentage = totalSales > 0 ? (grossMargin / totalSales) * 100 : 0;
+
+    return {
+      totalSales: totalSales,
+      orderCount: orderIds.size,
+      grossMargin: grossMargin,
+      marginPercentage: marginPercentage
+    };
+  } catch (e) {
+    Logger.log(`ERROR en getDashboardSummaryMetrics: ${e.stack}`);
+    return { error: `Error en Métricas de Resumen: ${e.message}` };
   }
-  const grossMargin = totalSales - totalCosts;
-  const marginPercentage = totalSales > 0 ? (grossMargin / totalSales) * 100 : 0;
-  const topSoldProducts = Object.entries(productQuantities).sort(([, a], [, b]) => b - a).slice(0, 5);
-  const communeDistribution = Object.entries(communeTally).sort(([, a], [, b]) => b - a);
-  return { totalSales, totalCosts, grossMargin, marginPercentage, orderCount: orderIds.size, totalItemsToPackage, topSoldProducts, communeDistribution };
 }
+
+function getDashboardCostMetrics() {
+  try {
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    const ordersSheet = ss.getSheetByName('Orders');
+    const costosSheet = ss.getSheetByName('CostosVenta');
+
+    const productCostMap = {};
+    if (costosSheet && costosSheet.getLastRow() > 1) {
+      const costosData = costosSheet.getRange("B2:C" + costosSheet.getLastRow()).getValues();
+      for (let i = costosData.length - 1; i >= 0; i--) {
+        const row = costosData[i];
+        const productName = row[0];
+        const cost = parseFloat(row[1]);
+        if (productName && !productCostMap[productName] && !isNaN(cost)) {
+          productCostMap[productName] = cost;
+        }
+      }
+    }
+
+    let totalCosts = 0;
+    const productsWithoutCost = new Set();
+    if (ordersSheet && ordersSheet.getLastRow() > 1) {
+        const ordersData = ordersSheet.getRange("A2:K" + ordersSheet.getLastRow()).getValues();
+        ordersData.forEach(row => {
+            const productName = row[9]; // Columna J: Nombre Producto
+            const quantity = row[10];   // Columna K
+            if (productName && quantity) {
+                if (productCostMap[productName]) {
+                    totalCosts += productCostMap[productName] * (parseInt(quantity, 10) || 0);
+                } else {
+                    productsWithoutCost.add(productName);
+                }
+            }
+        });
+    }
+
+    return {
+      totalCosts: totalCosts,
+      productsWithoutCostCount: productsWithoutCost.size,
+      productsWithoutCostNames: Array.from(productsWithoutCost)
+    };
+  } catch (e) {
+    Logger.log(`ERROR en getDashboardCostMetrics: ${e.stack}`);
+    return { error: `Error en Métricas de Costos: ${e.message}` };
+  }
+}
+
+function getDashboardTopProducts() {
+  try {
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    const ordersSheet = ss.getSheetByName('Orders');
+    const productQuantities = {};
+
+    if (ordersSheet && ordersSheet.getLastRow() > 1) {
+        const ordersData = ordersSheet.getRange("J2:K" + ordersSheet.getLastRow()).getValues(); // Leer desde la columna J
+        ordersData.forEach(row => {
+            const productName = row[0]; // J es index 0 en este rango
+            const quantity = row[1];    // K es index 1 en este rango
+            if (productName && quantity) {
+                productQuantities[productName] = (productQuantities[productName] || 0) + (parseInt(quantity, 10) || 0);
+            }
+        });
+    }
+
+    const topSoldProducts = Object.entries(productQuantities).sort(([, a], [, b]) => b - a).slice(0, 5);
+    return topSoldProducts;
+  } catch (e) {
+    Logger.log(`ERROR en getDashboardTopProducts: ${e.stack}`);
+    return { error: `Error en Top Productos: ${e.message}` };
+  }
+}
+
+function getDashboardCommuneDistribution() {
+  try {
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    const ordersSheet = ss.getSheetByName('Orders');
+    const communeCounts = {};
+
+    if (ordersSheet && ordersSheet.getLastRow() > 1) {
+        const ordersData = ordersSheet.getRange("A2:G" + ordersSheet.getLastRow()).getValues();
+        ordersData.forEach(row => {
+            const orderId = row[0];     // A es index 0
+            const commune = row[6];     // G es index 6
+            if (commune) {
+                const orderKey = `${orderId}-${commune}`;
+                if (!communeCounts[orderKey]) {
+                    communeCounts[orderKey] = commune;
+                }
+            }
+        });
+    }
+
+    const communeTally = {};
+    Object.values(communeCounts).forEach(c => communeTally[c] = (communeTally[c] || 0) + 1);
+    const communeDistribution = Object.entries(communeTally).sort(([, a], [, b]) => b - a);
+    return communeDistribution;
+  } catch (e) {
+    Logger.log(`ERROR en getDashboardCommuneDistribution: ${e.stack}`);
+    return { error: `Error en Distribución por Comuna: ${e.message}` };
+  }
+}
+
 
 function futureModulePlaceholder() {
   SpreadsheetApp.getUi().alert("Este módulo será implementado en una futura actualización.");
