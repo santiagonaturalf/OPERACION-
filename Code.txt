@@ -14,6 +14,8 @@ function onOpen() {
     .addItem('🚀 Abrir Dashboard de Operaciones', 'showDashboard')
     .addSeparator()
     .addItem('🚚 Comanda Rutas', 'showComandaRutasDialog')
+    .addSeparator()
+    .addItem('📈 Analizar Adquisiciones', 'runPriceAnalysis')
     .addToUi();
 
   ui.createMenu('Módulo de Finanzas')
@@ -66,7 +68,10 @@ function setupProjectSheets() {
     { name: "AsignacionesHistoricas", headers: ["ID_Pago", "ID_Pedido", "Nombre_Banco", "Nombre_Pedido", "Monto", "Fecha_Asignacion"], index: 4 },
     { name: "Lista de Envasado", headers: ["Cantidad", "Inventario", "Nombre Producto"], index: 5 },
     { name: "Lista de Adquisiciones", headers: ["Producto Base", "Cantidad a Comprar", "Formato de Compra", "Inventario Actual", "Unidad Inventario Actual", "Necesidad de Venta", "Unidad Venta", "Inventario al Finalizar", "Unidad Inventario Final", "Precio Adq. Anterior", "Precio Adq. HOY", "Proveedor"], index: 6 },
-    { name: "ClientBankData", headers: ["PaymentIdentifier", "CustomerRUT", "CustomerName", "LastSeen"], index: 7 }
+    { name: "ClientBankData", headers: ["PaymentIdentifier", "CustomerRUT", "CustomerName", "LastSeen"], index: 7 },
+    { name: "Historico Adquisiciones", headers: ["ID", "Fecha de Registro", "Producto Base", "Formato de Compra Real", "Cantidad Real", "Unidad Real", "Precio Unitario", "Costo Total Real", "Proveedor"], index: 8 },
+    { name: "CostosVenta", headers: ["Fecha", "Nombre Producto", "Costo Adquisicion"], index: 9 },
+    { name: "Anomalías de Precios", headers: ["Fecha", "Nombre Producto", "Costo de Hoy", "Costo Promedio Histórico", "Desviación Estándar", "Nivel de Desviación (StdDevs)", "Mensaje"], index: 10 }
   ];
 
   sheetsToEnsure.forEach(sheetInfo => {
@@ -641,6 +646,7 @@ function getReconciliationData() {
 // --- LÓGICA DEL DASHBOARD ---
 
 function showDashboard() {
+  updateAcquisitionListAutomated(); // Actualiza la lista de adquisiciones automáticamente
   const html = HtmlService.createHtmlOutputFromFile('DashboardDialog')
     .setWidth(1200)
     .setHeight(800);
@@ -874,6 +880,54 @@ function generatePackagingSheet(selectedCategories) {
 
 // --- FLUJO DE ADQUISICIONES ---
 
+/**
+ * Genera y guarda automáticamente la lista de adquisiciones.
+ * Calcula las necesidades basadas en los pedidos y SKU, y luego guarda el plan.
+ */
+function updateAcquisitionListAutomated() {
+  try {
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    const ordersSheet = ss.getSheetByName('Orders');
+    const skuSheet = ss.getSheetByName('SKU');
+
+    if (!ordersSheet || !skuSheet) {
+      Logger.log('Omitiendo actualización automática de adquisiciones: Faltan las hojas "Orders" o "SKU".');
+      return;
+    }
+
+    // 1. Generar el plan de adquisiciones
+    const { productToSkuMap, baseProductPurchaseOptions } = getPurchaseDataMaps(skuSheet);
+    const baseProductNeeds = calculateBaseProductNeeds(ordersSheet, productToSkuMap);
+    const acquisitionPlan = createAcquisitionPlan(baseProductNeeds, baseProductPurchaseOptions);
+
+    // 2. Transformar el plan al formato que espera `saveAcquisitions`
+    const finalPlan = Object.values(acquisitionPlan).map(p => {
+      const suggestedFormatString = `${p.suggestedFormat.name} (${p.suggestedFormat.size} ${p.suggestedFormat.unit})`;
+      const allFormatStrings = p.availableFormats.map(f => `${f.name} (${f.size} ${f.unit})`);
+
+      return {
+        productName: p.productName,
+        quantity: p.suggestedQty,
+        selectedFormatString: suggestedFormatString,
+        supplier: p.supplier,
+        totalNeed: p.totalNeed,
+        unit: p.unit,
+        allFormatStrings: allFormatStrings,
+        allFormatObjects: p.availableFormats.map(f => ({...f}))
+      };
+    });
+
+    // 3. Guardar el plan utilizando la función existente
+    // Esta función ya se encarga de limpiar la hoja, escribir encabezados y obtener el inventario actual.
+    saveAcquisitions(finalPlan);
+    Logger.log("La lista de adquisiciones se ha actualizado automáticamente.");
+
+  } catch (e) {
+    Logger.log(`Error durante la actualización automática de adquisiciones: ${e.toString()}`);
+    // No mostramos una alerta al usuario para no ser intrusivos, pero lo registramos.
+  }
+}
+
 function getAcquisitionDataForEditor() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const ordersSheet = ss.getSheetByName('Orders');
@@ -933,17 +987,35 @@ function saveAcquisitions(finalPlan) {
   sheet.getRange("L1").setBackground("#d9d9d9");
   sheet.setFrozenRows(1);
 
+  const inventoryMap = getCurrentInventory(); // Get current inventory
+  const priceMap = getHistoricalPrices(); // Get historical prices
   const dataToWrite = [];
+
   finalPlan.forEach(p => {
     const selectedFormatObject = p.allFormatObjects.find(f => `${f.name} (${f.size} ${f.unit})` === p.selectedFormatString);
     const formatSize = selectedFormatObject ? selectedFormatObject.size : 0;
 
+    const currentInventory = inventoryMap[p.productName] || { quantity: 0, unit: p.unit };
+
     const purchasedAmount = (parseFloat(p.quantity) || 0) * formatSize;
-    const finalInventory = purchasedAmount - (parseFloat(p.totalNeed) || 0);
+    const finalInventory = currentInventory.quantity + purchasedAmount - (parseFloat(p.totalNeed) || 0);
+
+    const history = priceMap[p.productName] || [];
+    const precioHoy = history.length > 0 ? history[0].price : "";
+    const precioAnterior = history.length > 1 ? history[1].price : "";
 
     const rowData = [
-      p.productName, p.quantity, p.selectedFormatString, 0, p.unit,
-      p.totalNeed, p.unit, finalInventory, p.unit, "", "",
+      p.productName,
+      p.quantity,
+      p.selectedFormatString,
+      currentInventory.quantity, // Use actual inventory
+      currentInventory.unit,     // Use actual inventory unit
+      p.totalNeed,
+      p.unit,
+      finalInventory,
+      p.unit,
+      precioAnterior, // Columna J
+      precioHoy,      // Columna K
       p.supplier || "Sin Proveedor"
     ];
     dataToWrite.push(rowData);
@@ -1101,7 +1173,429 @@ function getOrdersForSupplier(supplierName) {
   };
 }
 
+// --- MÓDULO DE ANÁLISIS DE PRECIOS ---
+
+/**
+ * Procesa la hoja "Reporte Adquisiciones" para registrar las compras diarias
+ * en la hoja "Historico Adquisiciones", evitando duplicados.
+ * Aplica la lógica de corrección de compras si los datos correspondientes están presentes.
+ */
+function procesarReporteAdquisiciones() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const ui = SpreadsheetApp.getUi();
+
+  const reporteSheet = ss.getSheetByName("Reporte Adquisiciones");
+  if (!reporteSheet) {
+    ui.alert('Error: No se encontró la hoja "Reporte Adquisiciones". Por favor, asegúrese de que la hoja exista y tenga ese nombre exacto.');
+    return;
+  }
+
+  const historicoSheet = ss.getSheetByName("Historico Adquisiciones");
+  if (!historicoSheet) {
+    ui.alert('Error: No se encontró la hoja "Historico Adquisiciones". Por favor, ejecute el setup inicial desde el menú.');
+    return;
+  }
+
+  try {
+    const reporteData = reporteSheet.getDataRange().getValues();
+    reporteData.shift(); // Quitar encabezados
+
+    const historicoLastRow = historicoSheet.getLastRow();
+    const existingIds = new Set();
+    if (historicoLastRow > 1) {
+      const historicoIds = historicoSheet.getRange(2, 1, historicoLastRow - 1, 1).getValues();
+      historicoIds.forEach(row => {
+        if (row[0]) existingIds.add(row[0].toString().trim());
+      });
+    }
+
+    const newRowsToAppend = [];
+    const today = new Date();
+
+    reporteData.forEach(row => {
+      // Mapeo de columnas (índice basado en 0)
+      const ID_COL = 12;
+      const ID = row[ID_COL] ? row[ID_COL].toString().trim() : null;
+
+      if (!ID || ID === "" || existingIds.has(ID)) {
+        return; // Omitir si no hay ID, está vacío o ya fue procesado
+      }
+
+      const PRODUCTO_BASE_COL = 1;
+      const FORMATO_COMPRA_COL = 2;
+      const CANTIDAD_COMPRA_COL = 3;
+      const PRECIO_COMPRA_COL = 4;
+      const TOTAL_COL = 5;
+      const PROVEEDOR_COL = 6;
+
+      const CORRECCION_CANTIDAD_COL = 8;
+      const CORRECCION_FORMATO_COL = 9;
+      const CORRECCION_FORMATO_CANT_COL = 10;
+      const CORRECCION_FORMATO_UNIDAD_COL = 11;
+
+      let cantidadReal, formatoReal, unidadReal;
+
+      // Lógica de corrección
+      if (row[CORRECCION_CANTIDAD_COL] && row[CORRECCION_CANTIDAD_COL] !== "") {
+        cantidadReal = row[CORRECCION_CANTIDAD_COL];
+        const formatoNombre = row[CORRECCION_FORMATO_COL] || '';
+        const formatoCantidad = row[CORRECCION_FORMATO_CANT_COL] || '';
+        const formatoUnidad = row[CORRECCION_FORMATO_UNIDAD_COL] || '';
+        formatoReal = `${formatoNombre.toString().trim()} (${formatoCantidad} ${formatoUnidad.toString().trim()})`;
+        unidadReal = formatoUnidad.toString().trim();
+      } else {
+        cantidadReal = row[CANTIDAD_COMPRA_COL];
+        formatoReal = row[FORMATO_COMPRA_COL];
+        const match = formatoReal.toString().match(/\((?:[\d.,]+|\s)*([a-zA-ZáéíóúÁÉÍÓÚñÑ]+)\)/);
+        unidadReal = match && match[1] ? match[1] : 'Unidad'; // Fallback a "Unidad"
+      }
+
+      const newRow = [
+        ID,                               // ID
+        today,                            // Fecha de Registro
+        row[PRODUCTO_BASE_COL],           // Producto Base
+        formatoReal,                      // Formato de Compra Real
+        cantidadReal,                     // Cantidad Real
+        normalizeUnit(unidadReal),        // Unidad Real (usando helper existente)
+        row[PRECIO_COMPRA_COL],           // Precio Unitario
+        row[TOTAL_COL],                   // Costo Total Real
+        row[PROVEEDOR_COL]                // Proveedor
+      ];
+
+      newRowsToAppend.push(newRow);
+      existingIds.add(ID); // Añadir al set para evitar duplicados en la misma ejecución
+    });
+
+    if (newRowsToAppend.length > 0) {
+      historicoSheet.getRange(historicoSheet.getLastRow() + 1, 1, newRowsToAppend.length, newRowsToAppend[0].length).setValues(newRowsToAppend);
+      ui.alert(`Proceso completado. Se han añadido ${newRowsToAppend.length} nuevas adquisiciones al historial.`);
+    } else {
+      ui.alert('No se encontraron nuevas adquisiciones para procesar.');
+    }
+
+  } catch (e) {
+    Logger.log(e);
+    ui.alert(`Ha ocurrido un error durante el procesamiento: ${e.message}`);
+  }
+}
+
+/**
+ * Orquesta el proceso completo de análisis de precios,
+ * llamando primero al procesamiento de adquisiciones y luego al cálculo de costos.
+ */
+function runPriceAnalysis() {
+  try {
+    procesarReporteAdquisiciones();
+    const analysisData = getAnalysisData();
+    showPriceApprovalDashboard(analysisData);
+  } catch (e) {
+    Logger.log(e);
+    SpreadsheetApp.getUi().alert("Ocurrió un error en el proceso de análisis: " + e.message);
+  }
+}
+
+/**
+ * Analiza las adquisiciones del día, calcula los costos de venta y detecta anomalías.
+ * @returns {{allCosts: Array<Array<any>>, anomalies: Array<object>}} Un objeto que contiene todos los costos calculados y una lista de anomalías detectadas.
+ */
+function getAnalysisData() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const DEVIATION_THRESHOLD = 2.5;
+
+  const historicoSheet = ss.getSheetByName("Historico Adquisiciones");
+  const skuSheet = ss.getSheetByName("SKU");
+  const costosSheet = ss.getSheetByName("CostosVenta");
+  const ordersSheet = ss.getSheetByName("Orders");
+
+  if (!historicoSheet || !skuSheet || !costosSheet || !ordersSheet) {
+    throw new Error("Faltan una o más hojas requeridas. Ejecute el setup inicial.");
+  }
+
+  const historicoData = historicoSheet.getDataRange().getValues();
+  const skuData = skuSheet.getDataRange().getValues();
+  const costosData = costosSheet.getDataRange().getValues();
+  const ordersData = ordersSheet.getDataRange().getValues();
+
+  historicoData.shift();
+  skuData.shift();
+  costosData.shift();
+  ordersData.shift();
+
+  // Crear mapa de precios de venta (el más reciente por producto)
+  const salePrices = {};
+  const ORDERS_ITEM_NAME_COL = 8;
+  const ORDERS_ITEM_PRICE_COL = 11;
+  for (let i = ordersData.length - 1; i >= 0; i--) {
+      const row = ordersData[i];
+      const productName = row[ORDERS_ITEM_NAME_COL];
+      const price = parseFloat(row[ORDERS_ITEM_PRICE_COL]);
+      if (productName && !salePrices[productName] && price > 0) {
+          salePrices[productName] = price;
+      }
+  }
+
+  const skuMap = {};
+  skuData.forEach(row => {
+    const productoBase = row[1];
+    if (!productoBase) return;
+    if (!skuMap[productoBase]) skuMap[productoBase] = [];
+    skuMap[productoBase].push({
+      nombreProducto: row[0],
+      cantidadVenta: parseFloat(String(row[6]).replace(',', '.')) || 0,
+      unidadVenta: normalizeUnit(row[7])
+    });
+  });
+
+  const historicalCosts = {};
+  costosData.forEach(row => {
+    const productName = row[1];
+    const cost = parseFloat(row[2]);
+    if (!productName || isNaN(cost)) return;
+    if (!historicalCosts[productName]) historicalCosts[productName] = [];
+    historicalCosts[productName].push(cost);
+  });
+
+  const analysisResults = [];
+  const today = new Date();
+  const todayString = today.toDateString();
+  const processedProducts = new Set();
+
+  const todayAcquisitions = historicoData.filter(acq => new Date(acq[1]).toDateString() === todayString);
+
+  todayAcquisitions.forEach(acq => {
+    const productoBase = acq[2];
+    const formato = acq[3];
+    const precioUnitario = parseFloat(String(acq[6]).replace(',', '.')) || 0;
+
+    const match = formato.toString().match(/\((\d+(?:[.,]\d+)?)/);
+    const formatoSize = match && match[1] ? parseFloat(match[1].replace(',', '.')) : 1;
+
+    if (formatoSize === 0) return;
+    const costoPorUnidadBase = precioUnitario / formatoSize;
+
+    if (skuMap[productoBase]) {
+      skuMap[productoBase].forEach(sku => {
+        if (processedProducts.has(sku.nombreProducto)) return;
+
+        const costoFinal = costoPorUnidadBase * sku.cantidadVenta;
+        const history = historicalCosts[sku.nombreProducto] || [];
+        const stats = calculateStats(history);
+
+        let status = 'ok';
+        let deviationLevel = 0;
+        if (history.length < 2) {
+            status = 'new';
+        } else if (stats.stdDev > 0) {
+            deviationLevel = (costoFinal - stats.mean) / stats.stdDev;
+            if (Math.abs(deviationLevel) > DEVIATION_THRESHOLD) {
+                status = 'anomaly';
+            }
+        }
+
+        analysisResults.push({
+          nombreProducto: sku.nombreProducto,
+          costoHoy: costoFinal,
+          status: status,
+          productoBase: productoBase,
+          formatoCompra: formato,
+          proveedor: acq[8],
+          precioUnitarioCompra: precioUnitario,
+          costoPromedio: stats.mean,
+          desviacionEstandar: stats.stdDev,
+          nivelDesviacion: deviationLevel,
+          precioVenta: salePrices[sku.nombreProducto] || 0
+        });
+        processedProducts.add(sku.nombreProducto);
+      });
+    }
+  });
+
+  return analysisResults;
+}
+
+/**
+ * Muestra un diálogo modal con las anomalías de precios para su aprobación.
+ * @param {object} analysisData - El objeto que contiene allCosts y anomalies.
+ */
+function showPriceApprovalDashboard(analysisData) {
+  const template = HtmlService.createTemplateFromFile('PriceApprovalDialog');
+  template.analysisResults = analysisData;
+
+  const html = template.evaluate()
+      .setWidth(900)
+      .setHeight(600);
+
+  SpreadsheetApp.getUi().showModalDialog(html, 'Revisar y Aprobar Precios de Adquisición');
+}
+
+/**
+ * Guarda los datos de costos y anomalías aprobados en sus respectivas hojas.
+ * Esta función es llamada desde el dashboard de aprobación.
+ * @param {object} data - Un objeto que contiene las listas 'costs' y 'anomalies'.
+ * @returns {string} Un mensaje de confirmación.
+ */
+function commitPriceData(data) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const costosSheet = ss.getSheetByName("CostosVenta");
+  const anomaliasSheet = ss.getSheetByName("Anomalías de Precios");
+  const today = new Date();
+  const todayString = today.toDateString();
+
+  try {
+    // 1. Preparar los datos para escribir
+    const costsToWrite = data.map(item => [today, item.nombreProducto, item.costoHoy]);
+
+    const anomaliesToWrite = data
+      .filter(item => item.status === 'anomaly')
+      .map(a => [
+        today, a.nombreProducto, a.costoHoy, a.costoPromedio, a.desviacionEstandar, a.nivelDesviacion,
+        `Costo de hoy (${a.costoHoy.toFixed(2)}) se desvía en ${a.nivelDesviacion.toFixed(2)} stddevs.`
+      ]);
+
+    // 2. Guardar los costos de venta
+    if (costsToWrite.length > 0) {
+      const allCostosData = costosSheet.getDataRange().getValues();
+      const rowsToDeleteCosts = [];
+      allCostosData.forEach((row, index) => {
+        if (index > 0 && new Date(row[0]).toDateString() === todayString) {
+          rowsToDeleteCosts.push(index + 1);
+        }
+      });
+      for (let i = rowsToDeleteCosts.length - 1; i >= 0; i--) {
+        costosSheet.deleteRow(rowsToDeleteCosts[i]);
+      }
+      costosSheet.getRange(costosSheet.getLastRow() + 1, 1, costsToWrite.length, 3).setValues(costsToWrite);
+    }
+
+    // 3. Guardar las anomalías
+    const allAnomaliasData = anomaliasSheet.getDataRange().getValues();
+    const rowsToDeleteAnomalies = [];
+    allAnomaliasData.forEach((row, index) => {
+      if (index > 0 && new Date(row[0]).toDateString() === todayString) {
+        rowsToDeleteAnomalies.push(index + 1);
+      }
+    });
+    for (let i = rowsToDeleteAnomalies.length - 1; i >= 0; i--) {
+      anomaliasSheet.deleteRow(rowsToDeleteAnomalies[i]);
+    }
+
+    if (anomaliesToWrite.length > 0) {
+      anomaliasSheet.getRange(anomaliasSheet.getLastRow() + 1, 1, anomaliesToWrite.length, 7).setValues(anomaliesToWrite);
+    }
+
+    return "Los precios han sido aprobados y guardados correctamente.";
+
+  } catch (e) {
+    Logger.log(e);
+    throw new Error("Ocurrió un error al guardar los datos: " + e.message);
+  }
+}
+
+
+/**
+ * Lee la hoja "Historico Adquisiciones" y devuelve un mapa de precios históricos por producto.
+ * @returns {Object<string, Array<{date: Date, price: number}>>} Un mapa donde las claves son
+ *   nombres de productos y los valores son arrays de objetos de precio, ordenados por fecha descendente.
+ */
+function getHistoricalPrices() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const historicoSheet = ss.getSheetByName("Historico Adquisiciones");
+  const priceMap = {};
+
+  if (!historicoSheet) {
+    Logger.log("Advertencia: No se encontró la hoja 'Historico Adquisiciones'. No se mostrarán precios.");
+    return priceMap;
+  }
+
+  const lastRow = historicoSheet.getLastRow();
+  if (lastRow < 2) {
+    return priceMap; // Hoja vacía o solo con encabezados
+  }
+
+  // Columnas: B (Fecha de Registro), C (Producto Base), G (Precio Unitario)
+  const data = historicoSheet.getRange(2, 2, lastRow - 1, 6).getValues();
+
+  data.forEach(row => {
+    const date = row[0];        // de la columna B
+    const productName = row[1]; // de la columna C
+    const price = row[5];       // de la columna G
+
+    if (productName && date && price) {
+      if (!priceMap[productName]) {
+        priceMap[productName] = [];
+      }
+      priceMap[productName].push({
+        date: new Date(date),
+        price: parseFloat(String(price).replace(",", ".")) || 0
+      });
+    }
+  });
+
+  // Ordenar los precios de cada producto por fecha, de más reciente a más antiguo
+  for (const product in priceMap) {
+    priceMap[product].sort((a, b) => b.date - a.date);
+  }
+
+  return priceMap;
+}
+
+function getCurrentInventory() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const inventorySheet = ss.getSheetByName("Inventario Actual");
+  const inventoryMap = {};
+
+  if (!inventorySheet) {
+    Logger.log("Warning: La hoja 'Inventario Actual' no fue encontrada. El inventario actual será 0.");
+    return inventoryMap;
+  }
+
+  const lastRow = inventorySheet.getLastRow();
+  if (lastRow < 2) {
+    return inventoryMap; // Sheet is empty or has only headers
+  }
+
+  // Read data from columns B (Producto Base), C (Cantidad Stock Real), D (Unidad Venta)
+  const data = inventorySheet.getRange(2, 2, lastRow - 1, 3).getValues();
+
+  data.forEach(row => {
+    const productName = row[0]; // from column B
+    const quantity = row[1];    // from column C
+    const unit = row[2];        // from column D
+    if (productName) {
+      inventoryMap[productName] = {
+        quantity: parseFloat(String(quantity).replace(",", ".")) || 0,
+        unit: unit || ''
+      };
+    }
+  });
+
+  return inventoryMap;
+}
+
 // --- FUNCIONES AUXILIARES ---
+
+/**
+ * Calcula la media y la desviación estándar de una población de un array de números.
+ * @param {number[]} data - Un array de números.
+ * @returns {{mean: number, stdDev: number}} Un objeto con la media y la desviación estándar.
+ */
+function calculateStats(data) {
+  if (!data || data.length === 0) {
+    return { mean: 0, stdDev: 0 };
+  }
+
+  const n = data.length;
+  const mean = data.reduce((a, b) => a + b, 0) / n;
+
+  if (n < 2) {
+    return { mean: mean, stdDev: 0 };
+  }
+
+  const variance = data.reduce((a, b) => a + Math.pow(b - mean, 2), 0) / n;
+  const stdDev = Math.sqrt(variance);
+
+  return { mean: mean, stdDev: stdDev };
+}
 
 function parseDDMMYYYY(dateString) {
   if (!dateString || typeof dateString !== 'string') return null;
