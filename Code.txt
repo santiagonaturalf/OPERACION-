@@ -1220,21 +1220,7 @@ function runPriceAnalysis() {
   try {
     procesarReporteAdquisiciones();
     const analysisData = getAnalysisData();
-
-    if (analysisData.anomalies && analysisData.anomalies.length > 0) {
-      showPriceApprovalDashboard(analysisData);
-    } else {
-      if (analysisData.allCosts && analysisData.allCosts.length > 0) {
-        commitPriceData({
-          costs: analysisData.allCosts,
-          anomalies: []
-        });
-        SpreadsheetApp.getUi().alert("Análisis de precios completado. No se encontraron anomalías y los costos de hoy han sido guardados.");
-      } else {
-        // This case can happen if acquisitions were processed in a previous run, but there are no new ones today.
-        SpreadsheetApp.getUi().alert("Análisis completado. No se encontraron nuevas adquisiciones para procesar hoy.");
-      }
-    }
+    showPriceApprovalDashboard(analysisData);
   } catch (e) {
     Logger.log(e);
     SpreadsheetApp.getUi().alert("Ocurrió un error en el proceso de análisis: " + e.message);
@@ -1254,7 +1240,7 @@ function getAnalysisData() {
   const costosSheet = ss.getSheetByName("CostosVenta");
 
   if (!historicoSheet || !skuSheet || !costosSheet) {
-    throw new Error("Faltan una o más hojas requeridas para el análisis de precios. Ejecute el setup inicial.");
+    throw new Error("Faltan una o más hojas requeridas. Ejecute el setup inicial.");
   }
 
   const historicoData = historicoSheet.getDataRange().getValues();
@@ -1285,10 +1271,10 @@ function getAnalysisData() {
     historicalCosts[productName].push(cost);
   });
 
-  const allCosts = [];
-  const anomalies = [];
+  const analysisResults = [];
   const today = new Date();
   const todayString = today.toDateString();
+  const processedProducts = new Set();
 
   const todayAcquisitions = historicoData.filter(acq => new Date(acq[1]).toDateString() === todayString);
 
@@ -1305,34 +1291,41 @@ function getAnalysisData() {
 
     if (skuMap[productoBase]) {
       skuMap[productoBase].forEach(sku => {
-        const costoFinal = costoPorUnidadBase * sku.cantidadVenta;
-        allCosts.push([today, sku.nombreProducto, costoFinal]);
+        if (processedProducts.has(sku.nombreProducto)) return;
 
+        const costoFinal = costoPorUnidadBase * sku.cantidadVenta;
         const history = historicalCosts[sku.nombreProducto] || [];
-        if (history.length >= 2) {
-          const stats = calculateStats(history);
-          if (stats.stdDev > 0) {
-            const deviationLevel = (costoFinal - stats.mean) / stats.stdDev;
+        const stats = calculateStats(history);
+
+        let status = 'ok';
+        let deviationLevel = 0;
+        if (history.length < 2) {
+            status = 'new';
+        } else if (stats.stdDev > 0) {
+            deviationLevel = (costoFinal - stats.mean) / stats.stdDev;
             if (Math.abs(deviationLevel) > DEVIATION_THRESHOLD) {
-              anomalies.push({
-                nombreProducto: sku.nombreProducto,
-                costoHoy: costoFinal,
-                productoBase: productoBase,
-                formatoCompra: formato,
-                proveedor: acq[8],
-                precioUnitarioCompra: precioUnitario,
-                costoPromedio: stats.mean,
-                desviacionEstandar: stats.stdDev,
-                nivelDesviacion: deviationLevel
-              });
+                status = 'anomaly';
             }
-          }
         }
+
+        analysisResults.push({
+          nombreProducto: sku.nombreProducto,
+          costoHoy: costoFinal,
+          status: status,
+          productoBase: productoBase,
+          formatoCompra: formato,
+          proveedor: acq[8],
+          precioUnitarioCompra: precioUnitario,
+          costoPromedio: stats.mean,
+          desviacionEstandar: stats.stdDev,
+          nivelDesviacion: deviationLevel
+        });
+        processedProducts.add(sku.nombreProducto);
       });
     }
   });
 
-  return { allCosts: allCosts, anomalies: anomalies };
+  return analysisResults;
 }
 
 /**
@@ -1341,8 +1334,7 @@ function getAnalysisData() {
  */
 function showPriceApprovalDashboard(analysisData) {
   const template = HtmlService.createTemplateFromFile('PriceApprovalDialog');
-  template.anomalies = analysisData.anomalies;
-  template.allCosts = analysisData.allCosts;
+  template.analysisResults = analysisData;
 
   const html = template.evaluate()
       .setWidth(900)
@@ -1365,8 +1357,18 @@ function commitPriceData(data) {
   const todayString = today.toDateString();
 
   try {
-    // 1. Guardar los costos de venta
-    if (data.costs && data.costs.length > 0) {
+    // 1. Preparar los datos para escribir
+    const costsToWrite = data.map(item => [today, item.nombreProducto, item.costoHoy]);
+
+    const anomaliesToWrite = data
+      .filter(item => item.status === 'anomaly')
+      .map(a => [
+        today, a.nombreProducto, a.costoHoy, a.costoPromedio, a.desviacionEstandar, a.nivelDesviacion,
+        `Costo de hoy (${a.costoHoy.toFixed(2)}) se desvía en ${a.nivelDesviacion.toFixed(2)} stddevs.`
+      ]);
+
+    // 2. Guardar los costos de venta
+    if (costsToWrite.length > 0) {
       const allCostosData = costosSheet.getDataRange().getValues();
       const rowsToDeleteCosts = [];
       allCostosData.forEach((row, index) => {
@@ -1377,26 +1379,22 @@ function commitPriceData(data) {
       for (let i = rowsToDeleteCosts.length - 1; i >= 0; i--) {
         costosSheet.deleteRow(rowsToDeleteCosts[i]);
       }
-      costosSheet.getRange(costosSheet.getLastRow() + 1, 1, data.costs.length, 3).setValues(data.costs);
+      costosSheet.getRange(costosSheet.getLastRow() + 1, 1, costsToWrite.length, 3).setValues(costsToWrite);
     }
 
-    // 2. Guardar las anomalías
-    if (data.anomalies && data.anomalies.length > 0) {
-      const allAnomaliasData = anomaliasSheet.getDataRange().getValues();
-      const rowsToDeleteAnomalies = [];
-      allAnomaliasData.forEach((row, index) => {
-        if (index > 0 && new Date(row[0]).toDateString() === todayString) {
-          rowsToDeleteAnomalies.push(index + 1);
-        }
-      });
-       for (let i = rowsToDeleteAnomalies.length - 1; i >= 0; i--) {
-        anomaliasSheet.deleteRow(rowsToDeleteAnomalies[i]);
+    // 3. Guardar las anomalías
+    const allAnomaliasData = anomaliasSheet.getDataRange().getValues();
+    const rowsToDeleteAnomalies = [];
+    allAnomaliasData.forEach((row, index) => {
+      if (index > 0 && new Date(row[0]).toDateString() === todayString) {
+        rowsToDeleteAnomalies.push(index + 1);
       }
+    });
+    for (let i = rowsToDeleteAnomalies.length - 1; i >= 0; i--) {
+      anomaliasSheet.deleteRow(rowsToDeleteAnomalies[i]);
+    }
 
-      const anomaliesToWrite = data.anomalies.map(a => [
-        today, a.nombreProducto, a.costoHoy, a.costoPromedio, a.desviacionEstandar, a.nivelDesviacion,
-        `Costo de hoy (${a.costoHoy.toFixed(2)}) se desvía en ${a.nivelDesviacion.toFixed(2)} stddevs.`
-      ]);
+    if (anomaliesToWrite.length > 0) {
       anomaliasSheet.getRange(anomaliasSheet.getLastRow() + 1, 1, anomaliesToWrite.length, 7).setValues(anomaliesToWrite);
     }
 
