@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <base target="_top">
+    <style>
+      body { font-family: Arial, sans-serif; margin: 0; padding: 20px; background-color: #f8f9fa; }
+      h2 { color: #202124; }
+      p { font-size: 14px; color: #5f6368; }
+      table { width: 100%; border-collapse: collapse; margin-top: 20px; box-shadow: 0 1px 3px rgba(0,0,0,0.12), 0 1px 2px rgba(0,0,0,0.24); background-color: white; }
+      th, td { border: 1px solid #ddd; padding: 12px; text-align: left; vertical-align: top; }
+      th { background-color: #f2f2f2; font-weight: bold; color: #202124; }
+      tr:nth-child(even) { background-color: #f9f9f9; }
+      .context { font-size: 12px; color: #5f6368; line-height: 1.4; }
+      .context b { color: #202124; }
+      .deviation-high { color: #d93025; font-weight: bold; }
+      .deviation-low { color: #1e8e3e; font-weight: bold; }
+      input[type="number"] { width: 95%; padding: 8px; border: 1px solid #ccc; border-radius: 4px; font-size: 14px; }
+      input[type="number"]:focus { border-color: #4285f4; outline: none; box-shadow: 0 0 0 2px #d2e3fc; }
+      .button-container { margin-top: 25px; text-align: right; }
+      button { padding: 10px 20px; border: none; border-radius: 4px; cursor: pointer; font-size: 14px; font-weight: bold; }
+      #approveBtn { background-color: #1a73e8; color: white; }
+      #approveBtn:disabled { background-color: #9e9e9e; cursor: not-allowed; }
+      #cancelBtn { background-color: #f1f3f4; color: #202124; margin-left: 10px; }
+    </style>
+  </head>
+  <body>
+    <h2>Aprobación de Precios de Adquisición</h2>
+    <p>Se han detectado las siguientes anomalías en los precios. Por favor, revísalos y ajústalos si es necesario antes de guardarlos.</p>
+
+    <table id="anomaliesTable">
+      <thead>
+        <tr>
+          <th>Producto</th>
+          <th>Costo Hoy (Editable)</th>
+          <th>Costo Promedio Hist.</th>
+          <th>Info. Compra</th>
+          <th>Desviación</th>
+        </tr>
+      </thead>
+      <tbody>
+        <!-- Las filas se insertarán aquí dinámicamente -->
+      </tbody>
+    </table>
+
+    <div class="button-container">
+      <button id="approveBtn">Aprobar y Guardar Cambios</button>
+      <button id="cancelBtn" onclick="google.script.host.close()">Cancelar</button>
+    </div>
+
+    <script>
+      const anomalies = <?!= JSON.stringify(anomalies) ?>;
+      const allCosts = <?!= JSON.stringify(allCosts) ?>;
+
+      window.onload = function() {
+        const tableBody = document.getElementById('anomaliesTable').getElementsByTagName('tbody')[0];
+        anomalies.forEach((item, index) => {
+          let newRow = tableBody.insertRow();
+
+          newRow.insertCell(0).innerHTML = item.nombreProducto;
+
+          let costCell = newRow.insertCell(1);
+          costCell.innerHTML = `<input type="number" id="costo-${index}" value="${item.costoHoy.toFixed(2)}" step="0.01">`;
+
+          newRow.insertCell(2).innerHTML = item.costoPromedio.toFixed(2);
+
+          newRow.insertCell(3).innerHTML = `
+            <div class="context">
+              <b>Base:</b> ${item.productoBase}<br>
+              <b>Formato:</b> ${item.formatoCompra}<br>
+              <b>Proveedor:</b> ${item.proveedor}<br>
+              <b>Precio Formato:</b> ${item.precioUnitarioCompra.toFixed(2)}
+            </div>
+          `;
+
+          let devCell = newRow.insertCell(4);
+          const devLevel = item.nivelDesviacion;
+          devCell.innerHTML = `${devLevel.toFixed(2)} StdDevs`;
+          devCell.className = devLevel > 0 ? 'deviation-high' : 'deviation-low';
+        });
+      };
+
+      document.getElementById('approveBtn').addEventListener('click', function() {
+        this.disabled = true;
+        this.textContent = 'Guardando...';
+
+        const updatedAnomalies = [];
+        anomalies.forEach((item, index) => {
+            const updatedCost = parseFloat(document.getElementById(`costo-${index}`).value);
+            const updatedItem = { ...item, costoHoy: updatedCost };
+            updatedAnomalies.push(updatedItem);
+        });
+
+        const finalCosts = allCosts.map(costRow => {
+            const productName = costRow[1];
+            const anomaly = updatedAnomalies.find(a => a.nombreProducto === productName);
+            if (anomaly) {
+                return [costRow[0], productName, anomaly.costoHoy];
+            }
+            return costRow;
+        });
+
+        const dataToCommit = {
+          costs: finalCosts,
+          anomalies: updatedAnomalies
+        };
+
+        google.script.run
+          .withSuccessHandler(function(response) {
+            alert(response);
+            google.script.host.close();
+          })
+          .withFailureHandler(function(error) {
+            alert('Error al guardar: ' + error.message);
+            document.getElementById('approveBtn').disabled = false;
+            document.getElementById('approveBtn').textContent = 'Aprobar y Guardar Cambios';
+          })
+          .commitPriceData(dataToCommit);
+      });
+    </script>
+  </body>
+</html>
