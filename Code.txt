@@ -1238,17 +1238,34 @@ function getAnalysisData() {
   const historicoSheet = ss.getSheetByName("Historico Adquisiciones");
   const skuSheet = ss.getSheetByName("SKU");
   const costosSheet = ss.getSheetByName("CostosVenta");
+  const ordersSheet = ss.getSheetByName("Orders");
 
-  if (!historicoSheet || !skuSheet || !costosSheet) {
+  if (!historicoSheet || !skuSheet || !costosSheet || !ordersSheet) {
     throw new Error("Faltan una o más hojas requeridas. Ejecute el setup inicial.");
   }
 
   const historicoData = historicoSheet.getDataRange().getValues();
   const skuData = skuSheet.getDataRange().getValues();
   const costosData = costosSheet.getDataRange().getValues();
+  const ordersData = ordersSheet.getDataRange().getValues();
+
   historicoData.shift();
   skuData.shift();
   costosData.shift();
+  ordersData.shift();
+
+  // Crear mapa de precios de venta (el más reciente por producto)
+  const salePrices = {};
+  const ORDERS_ITEM_NAME_COL = 8;
+  const ORDERS_ITEM_PRICE_COL = 11;
+  for (let i = ordersData.length - 1; i >= 0; i--) {
+      const row = ordersData[i];
+      const productName = row[ORDERS_ITEM_NAME_COL];
+      const price = parseFloat(row[ORDERS_ITEM_PRICE_COL]);
+      if (productName && !salePrices[productName] && price > 0) {
+          salePrices[productName] = price;
+      }
+  }
 
   const skuMap = {};
   skuData.forEach(row => {
@@ -1318,7 +1335,8 @@ function getAnalysisData() {
           precioUnitarioCompra: precioUnitario,
           costoPromedio: stats.mean,
           desviacionEstandar: stats.stdDev,
-          nivelDesviacion: deviationLevel
+          nivelDesviacion: deviationLevel,
+          precioVenta: salePrices[sku.nombreProducto] || 0
         });
         processedProducts.add(sku.nombreProducto);
       });

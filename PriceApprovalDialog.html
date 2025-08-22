@@ -7,8 +7,8 @@
       h2 { color: #202124; }
       p { font-size: 14px; color: #5f6368; }
       table { width: 100%; border-collapse: collapse; margin-top: 20px; box-shadow: 0 1px 3px rgba(0,0,0,0.12), 0 1px 2px rgba(0,0,0,0.24); background-color: white; }
-      th, td { border: 1px solid #ddd; padding: 12px; text-align: left; vertical-align: top; }
-      th { background-color: #f2f2f2; font-weight: bold; color: #202124; }
+      th, td { border: 1px solid #ddd; padding: 8px; text-align: left; vertical-align: top; font-size: 14px; }
+      th { background-color: #f2f2f2; font-weight: bold; color: #202124; padding: 12px 8px; }
       .context { font-size: 12px; color: #5f6368; line-height: 1.4; }
       .context b { color: #202124; }
       .deviation-high { color: #d93025; font-weight: bold; }
@@ -21,10 +21,13 @@
       #approveBtn:disabled { background-color: #9e9e9e; cursor: not-allowed; }
       #cancelBtn { background-color: #f1f3f4; color: #202124; margin-left: 10px; }
 
-      /* Color-coding classes */
-      .status-ok { background-color: #e6f4ea; } /* Light Green */
-      .status-new { background-color: #fffde7; } /* Light Yellow */
-      .status-anomaly { background-color: #fce8e6; } /* Light Red */
+      .status-ok { background-color: #e6f4ea; }
+      .status-new { background-color: #feefc3; }
+      .status-anomaly { background-color: #fce8e6; }
+
+      .margin-ok { color: #188038; font-weight: bold; }
+      .margin-warn { color: #f9ab00; font-weight: bold; }
+      .margin-bad { color: #d93025; font-weight: bold; }
     </style>
   </head>
   <body>
@@ -36,13 +39,13 @@
         <tr>
           <th>Producto</th>
           <th>Costo Hoy (Editable)</th>
-          <th>Costo Promedio Hist.</th>
+          <th>Precio Venta</th>
+          <th>Margen Bruto (%)</th>
           <th>Info. Compra</th>
           <th>Desviación</th>
         </tr>
       </thead>
       <tbody>
-        <!-- Las filas se insertarán aquí dinámicamente -->
       </tbody>
     </table>
 
@@ -54,6 +57,34 @@
     <script>
       const analysisResults = <?!= JSON.stringify(analysisResults) ?>;
 
+      function calculateMargin(salePrice, costPrice) {
+        if (salePrice > 0) {
+          return ((salePrice - costPrice) / salePrice) * 100;
+        }
+        return 0;
+      }
+
+      function updateMargin(index) {
+        const costInput = document.getElementById(`costo-${index}`);
+        const salePrice = parseFloat(costInput.dataset.salePrice);
+        const newCost = parseFloat(costInput.value);
+        const marginCell = document.getElementById(`margin-${index}`);
+
+        if (!marginCell || isNaN(salePrice) || isNaN(newCost)) return;
+
+        const newMargin = calculateMargin(salePrice, newCost);
+        marginCell.textContent = newMargin.toFixed(1) + '%';
+
+        marginCell.className = '';
+        if (newMargin < 15) {
+            marginCell.classList.add('margin-bad');
+        } else if (newMargin < 30) {
+            marginCell.classList.add('margin-warn');
+        } else {
+            marginCell.classList.add('margin-ok');
+        }
+      }
+
       window.onload = function() {
         const tableBody = document.getElementById('analysisTable').getElementsByTagName('tbody')[0];
         if (!analysisResults || analysisResults.length === 0) {
@@ -64,13 +95,15 @@
         analysisResults.forEach((item, index) => {
           let newRow = tableBody.insertRow();
           newRow.className = 'status-' + item.status;
-          item.originalIndex = index; // Keep track of original index
 
           newRow.insertCell(0).innerHTML = item.nombreProducto;
-          newRow.insertCell(1).innerHTML = `<input type="number" id="costo-${index}" value="${item.costoHoy.toFixed(2)}" step="0.01">`;
-          newRow.insertCell(2).innerHTML = item.costoPromedio > 0 ? item.costoPromedio.toFixed(2) : 'N/A';
+          newRow.insertCell(1).innerHTML = `<input type="number" id="costo-${index}" value="${item.costoHoy.toFixed(2)}" step="0.01" data-sale-price="${item.precioVenta}">`;
+          newRow.insertCell(2).innerHTML = item.precioVenta > 0 ? item.precioVenta.toFixed(2) : 'N/A';
 
-          newRow.insertCell(3).innerHTML = `
+          let marginCell = newRow.insertCell(3);
+          marginCell.id = `margin-${index}`;
+
+          newRow.insertCell(4).innerHTML = `
             <div class="context">
               <b>Base:</b> ${item.productoBase}<br>
               <b>Formato:</b> ${item.formatoCompra}<br>
@@ -79,7 +112,7 @@
             </div>
           `;
 
-          let devCell = newRow.insertCell(4);
+          let devCell = newRow.insertCell(5);
           if (item.status === 'anomaly') {
             const devLevel = item.nivelDesviacion;
             devCell.innerHTML = `${devLevel.toFixed(2)} StdDevs`;
@@ -87,6 +120,9 @@
           } else {
             devCell.innerHTML = 'N/A';
           }
+
+          document.getElementById(`costo-${index}`).oninput = function() { updateMargin(index); };
+          updateMargin(index);
         });
       };
 
